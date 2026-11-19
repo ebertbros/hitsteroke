@@ -227,6 +227,7 @@ uses
   UMenuStatic,
   UNote,
   UPathUtils,
+  URemoteControl, // HITSTER
   UScreenPopup,
   UScreenSong,
   USkins,
@@ -1832,7 +1833,7 @@ begin
         AudioPlayback.Position := PreviewPos;
 
         // set preview volume
-        PreviewVolume := EnsureRange(Ini.PreviewVolume, 0, 100) / 100;
+        PreviewVolume := RemoteScorePreviewVolume(EnsureRange(Ini.PreviewVolume, 0, 100) / 100); // HITSTER
         if (Ini.PreviewFading = 0) then
         begin
           // music fade disabled: start with full volume

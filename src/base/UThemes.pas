@@ -3171,11 +3171,11 @@ begin
       Result.G := 127/255;
       Result.B := 0;
     end;
-    6: //pink
+    6: //pink (Hitster pink #E6007E)
     begin
-      Result.R := 255/255;
-      Result.G := 110/255;
-      Result.B := 180/255;
+      Result.R := 230/255; // HITSTER
+      Result.G := 0;
+      Result.B := 126/255;
     end;
     7: //purple
     begin
@@ -3207,11 +3207,11 @@ begin
       Result.G := 110/255;
       Result.B := 210/255;
     end;
-    12: //cyan
+    12: //cyan (Hitster cyan #00AAD5)
     begin
-      Result.R := 0/255;
-      Result.G := 215/255;
-      Result.B := 215/255;
+      Result.R := 0; // HITSTER
+      Result.G := 170/255;
+      Result.B := 213/255;
     end;
     13: //flame
     begin
@@ -3279,11 +3279,11 @@ begin
       Result.G := 204/255;
       Result.B := 156/255;
     end;
-    6: //pink
+    6: //pink (light Hitster pink)
     begin
-      Result.R := 255/255;
-      Result.G := 192/255;
-      Result.B := 205/255;
+      Result.R := 255/255; // HITSTER
+      Result.G := 128/255;
+      Result.B := 190/255;
     end;
     7: //violet
     begin
@@ -3315,11 +3315,11 @@ begin
       Result.G := 160/255;
       Result.B := 235/255;
     end;
-    12: //cyan
+    12: //cyan (light Hitster cyan)
     begin
-      Result.R := 150/255;
-      Result.G := 230/255;
-      Result.B := 230/255;
+      Result.R := 128/255; // HITSTER
+      Result.G := 215/255;
+      Result.B := 238/255;
     end;
     13: //flame
     begin

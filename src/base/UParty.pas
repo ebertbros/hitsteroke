@@ -262,6 +262,7 @@ uses
   USong,
   USongs,
   UNote,
+  URemoteControl, // HITSTER: remote control / event mode
   SysUtils;
 
 //-------------
@@ -929,6 +930,10 @@ procedure TPartyGame.CallAfterSing;
   var
     ExecuteDefault: boolean;
 begin
+  // HITSTER: event mode skips the score screen / remote STOP returns home
+  if RemoteAfterSing then
+    Exit;
+
   if not bPartyStarted then
     ExecuteDefault := true
   else if (CurRound >= 0) then

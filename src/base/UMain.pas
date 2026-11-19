@@ -88,6 +88,7 @@ uses
   URecord,
   UBeatTimer,
   UPlatform,
+  URemoteControl, // HITSTER: remote control / event mode
   URenderer,
   USkins,
   UThemes,
@@ -191,6 +192,9 @@ begin
     Log.LogStatus('Write Ini', 'Initialization');
     Ini.Save;
 
+    // HITSTER: remote control / event mode ([Remote] in config.ini)
+    RemoteInit;
+
     // Theme
     Theme.LoadTheme(Ini.Theme, Ini.Color);
 
@@ -260,6 +264,8 @@ begin
     // call an uninitialize routine for every initialize step
     // or at least use the corresponding Free methods
 
+    RemoteFinalize; // HITSTER
+
     Log.LogStatus('Closing DB file', 'Finalization');
     if (DataBase <> nil) then
     begin
@@ -321,9 +327,11 @@ begin
 
       // keyboard/mouse/joystick events
       CheckEvents;
+      RemoteUpdate; // HITSTER
 
       // display
       Done := not Display.Draw;
+      RemoteDrawOverlay; // HITSTER
       Renderer.SwapBuffers;
 
       // FPS limiter

@@ -190,6 +190,8 @@ uses
   UGraphic          in 'base\UGraphic.pas',
   ULanguage         in 'base\ULanguage.pas',
   UMain             in 'base\UMain.pas',
+  UHitsterUI        in 'base\UHitsterUI.pas', // HITSTER
+  URemoteControl    in 'base\URemoteControl.pas', // HITSTER
   UDraw             in 'base\UDraw.pas',
   URecord           in 'base\URecord.pas',
   UTime             in 'base\UTime.pas',
