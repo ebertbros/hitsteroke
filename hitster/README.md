@@ -12,6 +12,10 @@ Trzy ekrany stanowiska rysuje `src/base/UHitsterUI.pas` (wywoływany z
   `TeaserVolume`), wyniki liczone od zera, zwycięzca, „Scan your next card”
   i odliczanie do powrotu (`ScoreSeconds`).
 
+Menu (tylko dla operatora, `MENU` z pilota) ma tło i kolory Hitstera, bez
+logo i nazwy UltraStar Deluxe. Tytuł okna i okna błędów: „Hitster Karaoke”.
+Ekran „About and credits” zostaje: wymienia autorów USDX (licencja GPL).
+
 Kolory graczy w grze: P1 `#E6007E`, P2 `#00AAD5` (pozycje 6 i 12 palety w
 `UThemes.GetPlayerColor`, w `config.ini` `[PlayerColor] P1=6, P2=12`).
 Mikrofony na stoisku mają te same kolory.

@@ -128,6 +128,13 @@ ekran oczekiwania.
 Kończy piosenkę od razu, ale tak, jakby skończyła się sama: z ekranem wyników
 (STOP je pomija). Poza ekranem śpiewu zwraca `"error":"NOT_SINGING"`.
 
+### MENU [main|options|record]
+
+Otwiera menu dla operatora: główne, opcje albo ustawienia mikrofonów
+(`record`). Ekran oczekiwania zasłania listę piosenek, więc to jest droga do
+ustawień bez wychodzenia z gry. W trakcie piosenki zwraca `"error":"SINGING"`
+(najpierw STOP). Powrót na ekran oczekiwania: `STOP` albo `PLAY`.
+
 ### SHOT [&lt;plik.jpg&gt;]
 
 Zapisuje to, co widać na ekranie (razem z nakładką), do podanego pliku albo do

@@ -86,10 +86,18 @@ class Renderer:
         # headless Chromium paints only window height minus ~90 px (window
         # chrome), so render a taller window and crop to the requested size
         raw = self.tmp / (out.stem + ".raw.png")
-        subprocess.run([self.chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars",
-                        "--default-background-color=00000000", "--force-device-scale-factor=1",
-                        "--window-size=%d,%d" % (w, h + 160), "--screenshot=" + str(raw),
-                        src.as_uri()], check=True, capture_output=True)
+        cmd = [self.chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars",
+               "--default-background-color=00000000", "--force-device-scale-factor=1",
+               "--window-size=%d,%d" % (w, h + 160), "--screenshot=" + str(raw), src.as_uri()]
+        # headless Chromium occasionally hangs on start: time out and retry
+        for attempt in range(3):
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, timeout=60)
+                break
+            except subprocess.TimeoutExpired:
+                print("  %s: Chromium nie odpowiada, ponawiam" % out.name)
+        else:
+            die("Chromium nie wyrenderował " + out.name)
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(raw),
                         "-vf", "crop=%d:%d:0:0" % (w, h), "-pix_fmt", "rgba", str(out)],
                        check=True, capture_output=True)
@@ -198,6 +206,15 @@ def render_skin_art(r, skin_dir):
     """, "<div></div>")
     r.render(skin_dir / "hitster_empty.png", 4, 4, "", "")
 
+    # menus (operator only): brand background without the USDX logo,
+    # dark bottom bar instead of the white legend strip
+    r.render(skin_dir / "hitster_menu_bg.png", 1920, 1080, """
+      body{background:%s}
+      .g{position:absolute;inset:0;background:radial-gradient(ellipse 75%% 60%% at 50%% 35%%,rgba(0,170,213,.16),rgba(0,170,213,0) 70%%)}
+      .v{position:absolute;inset:0;background:radial-gradient(ellipse 90%% 85%% at 50%% 50%%,rgba(0,0,0,0) 55%%,rgba(0,0,0,.5))}
+    """ % BG, '<div class="g"></div><div class="v"></div>')
+    r.render(skin_dir / "hitster_bar.png", 550, 30, "div{position:absolute;inset:0;background:rgba(0,10,14,.78)}", "<div></div>")
+
     # notes: the game replaces only the hue with the player colour (saturation
     # and brightness stay), so they are drawn in saturated red here.
     #   notesPlain* = notes still to sing: 30% fill, solid edge
@@ -273,6 +290,22 @@ for p in ("SingP1", "SingP1TwoP", "SingP2R", "SingP1ThreeP", "SingP2M", "SingP3R
         THEME_SETTINGS.setdefault(p + part, {})["X"] = OFF
 
 
+# skin colour "Blue" drives ColorDark / ColorLight / ColorLightest in the base
+# theme; the game appends those after [Colors], so they cannot be redefined.
+# The Hitster theme uses its own names instead.
+THEME_COLORS = {
+    "HitDark": "14 52 64",        # buttons and rows, not selected
+    "HitLight": "230 0 126",      # selected: Hitster pink (= P1)
+    "HitLightest": "147 172 179", # secondary text
+}
+
+MENU_SETTINGS = {
+    "DefaultBar1": {"Color": "HitDark", "Type": "Transparent", "Tex": "Leiste2"},
+    "DefaultLegendText": {"Color": "White"},
+    "DefaultSelectSlide": {"STDColor": "HitLightest"},
+}
+
+
 def build_theme(game, userdir, r):
     src_ini = game / "themes/Modern.ini"
     src_skin = game / "themes/Modern"
@@ -285,7 +318,17 @@ def build_theme(game, userdir, r):
         shutil.rmtree(skin_dir)
     shutil.copytree(src_skin, skin_dir, ignore=shutil.ignore_patterns("*.ini"))
 
-    lines = src_ini.read_text(encoding="utf-8", errors="replace").splitlines()
+    text = src_ini.read_text(encoding="utf-8", errors="replace")
+    for old, new in (("ColorLightest", "HitLightest"), ("ColorLight", "HitLight"), ("ColorDark", "HitDark")):
+        text = re.sub(r"\b%s\b" % old, new, text)
+    # no mirror reflections under buttons and bars
+    text = re.sub(r"(?m)^(\s*Reflection\s*=\s*)1\s*$", r"\g<1>0", text)
+    lines = text.splitlines()
+    for k, v in THEME_COLORS.items():
+        ini_set(lines, "Colors", k, v)
+    for section, keys in MENU_SETTINGS.items():
+        for k, v in keys.items():
+            ini_set(lines, section, k, v)
     for section, keys in THEME_SETTINGS.items():
         present = any(re.match(r"^\s*\[%s\]" % re.escape(section), l) for l in lines)
         if not present and section.startswith("Sing") and section != "SingStatic1":
@@ -299,6 +342,15 @@ def build_theme(game, userdir, r):
     ini_set(skin, "Skin", "Name", "Hitster")
     ini_set(skin, "Textures", "HitsterScrim", "hitster_scrim.png")
     ini_set(skin, "Textures", "HitsterEmpty", "hitster_empty.png")
+    # backgrounds (the Modern ones carry the USDX logo) and the legend bar
+    for key in ("LoadingBG", "MainBG", "SongBG", "ScoreScreenBG", "HighScoresBG", "OptionsBG",
+                "EditBG", "EditSubBG", "PartyBG"):
+        ini_set(skin, "Textures", key, "hitster_menu_bg.png")
+    ini_set(skin, "Textures", "Leiste2", "hitster_bar.png")
+    # USDX pictograms next to the menu titles
+    for key in ("MainIcon", "IconOption", "IconEdit", "IconSongMenu", "ScoreIcon", "PartyIcon",
+                "StatIcon", "VideoIcon", "SongCD", "MainSearch"):
+        ini_set(skin, "Textures", key, "hitster_empty.png")
     (skin_dir / "Hitster.ini").write_text("\n".join(skin) + "\n", encoding="utf-8")
 
     render_skin_art(r, skin_dir)

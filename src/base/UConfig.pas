@@ -200,7 +200,8 @@ implementation
 
 function USDXVersionStr(): string;
 begin
-  Result := 'UltraStar Deluxe - www.usdx.eu - v' + USDX_VERSION;
+  // HITSTER: kiosk build, the USDX name is not shown on screen (credits stay in About)
+  Result := 'Hitster Karaoke - v' + USDX_VERSION;
 end;
 
 end.

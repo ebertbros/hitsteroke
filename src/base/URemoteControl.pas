@@ -10,6 +10,7 @@
  *   STOP
  *   STATUS
  *   FINISH              ends the song now and shows the results
+ *   MENU [main|options|record]  opens a menu for the operator (not while singing)
  *   SHOT [<file.jpg>]   saves what is on screen (operator / tests)
  *
  * Configuration lives in its own [Remote] section of config.ini. With
@@ -46,6 +47,15 @@ procedure RemoteDrawOverlay;
 function RemoteAfterSing: boolean;
 { volume of the song excerpt on the score screen (Default = upstream value) }
 function RemoteScorePreviewVolume(Default: single): single;
+{ a sung line was rated (0..8, see TScreenSingController line bonus) }
+procedure RemoteLineRating(PlayerIndex, Rating: integer);
+
+const
+  HITSTER_GOLD_K = 1.5; // golden (bonus) notes are this much thicker on the kiosk
+
+{ kiosk note style: golden notes bold instead of permanently twinkling;
+  stars only reward great singing (golden note hit, perfect note / line) }
+function RemoteKioskNotes: boolean;
 { closes the socket and frees resources }
 procedure RemoteFinalize;
 
@@ -134,6 +144,7 @@ type
     function  CmdStop: UTF8String;
     function  CmdStatus: UTF8String;
     function  CmdShot(const Arg: UTF8String): UTF8String;
+    function  CmdMenu(const Arg: UTF8String): UTF8String;
     procedure SaveShot;
 
     function  SongsReady: boolean;
@@ -479,6 +490,8 @@ begin
     Result := CmdStatus
   else if Cmd = 'SHOT' then
     Result := CmdShot(Arg)
+  else if Cmd = 'MENU' then
+    Result := CmdMenu(LowerCase(Arg))
   else if Cmd = 'FINISH' then
   begin
     if IsScreen(Display.CurrentScreen, @ScreenSing) then
@@ -696,6 +709,36 @@ begin
   else
     Result := Result + ',"last_error":null';
   Result := Result + '}';
+end;
+
+{ operator access to the menus without a keyboard: the waiting screen covers
+  the song list, so this is the way to the microphone setup on the stand }
+function TRemoteControl.CmdMenu(const Arg: UTF8String): UTF8String;
+var
+  Target: PMenu;
+begin
+  if (Arg = '') or (Arg = 'main') then
+    Target := @ScreenMain
+  else if Arg = 'options' then
+    Target := @ScreenOptions
+  else if Arg = 'record' then
+    Target := @ScreenOptionsRecord
+  else
+  begin
+    Result := '{"ok":false,"cmd":"MENU","error":"BAD_MENU","menu":' + JsonStr(Arg) + '}';
+    Exit;
+  end;
+  if IsScreen(Display.CurrentScreen, @ScreenSing) then
+  begin
+    Result := '{"ok":false,"cmd":"MENU","error":"SINGING","detail":"send STOP first"}';
+    Exit;
+  end;
+  FAction := raNone;
+  FCurrentPath := '';
+  CloseOverlays;
+  Display.FadeTo(Target);
+  Log.LogStatus('MENU ' + Arg, LOG_SOURCE);
+  Result := '{"ok":true,"cmd":"MENU"}';
 end;
 
 function TRemoteControl.CmdShot(const Arg: UTF8String): UTF8String;
@@ -1118,6 +1161,17 @@ begin
     Result := RemoteControl.ScorePreviewVolume(Default)
   else
     Result := Default;
+end;
+
+function RemoteKioskNotes: boolean;
+begin
+  Result := (RemoteControl <> nil) and RemoteControl.FEnabled and RemoteControl.FDesign;
+end;
+
+procedure RemoteLineRating(PlayerIndex, Rating: integer);
+begin
+  if (RemoteControl <> nil) and RemoteControl.FEnabled and RemoteControl.FDesign then
+    HitsterLineRating(PlayerIndex, Rating);
 end;
 
 procedure RemoteFinalize;

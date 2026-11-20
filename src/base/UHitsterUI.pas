@@ -40,6 +40,8 @@ procedure HitsterUISetArtDir(const Dir: IPath);
 procedure HitsterDrawWaiting(const Title, Sub: UTF8String; Elapsed: real);
 { sing screen overlay }
 procedure HitsterDrawSing(Elapsed: real);
+{ shows a line rating (0..8) next to the player's lane }
+procedure HitsterLineRating(PlayerIndex, Rating: integer);
 { score screen; Remaining < 0 hides the countdown }
 procedure HitsterDrawScore(Elapsed, Remaining, Total: real);
 procedure HitsterUIFree;
@@ -53,6 +55,7 @@ uses
   ULog,
   UMusic,
   UNote,
+  URecord,
   URenderer,
   USong,
   UText;
@@ -92,6 +95,14 @@ var
 
   SingShare: real = 0.5;   // smoothed P1 share of the duel bar on the sing screen
   SingTicks: cardinal = 0;
+
+  // smoothed microphone level per player (0..1)
+  MicShown: array[0..1] of real = (0, 0);
+  MicTicks: cardinal = 0;
+
+  // last line rating per player (P1, P2)
+  RatingValue: array[0..1] of integer;
+  RatingTicks: array[0..1] of cardinal = (0, 0);
 
 { ---------------------------------------------------------------------------
   helpers
@@ -386,6 +397,142 @@ end;
   sing screen
   --------------------------------------------------------------------------- }
 
+{ rating of the last line: pops in, rises a little and fades out.
+  Only encouraging ratings are shown (guests are business partners, the
+  brand tone is fun and inclusive); weak lines simply show nothing.
+  CenterY is the vertical middle of the text, Align as in Txt. }
+procedure DrawRating(Player: integer; X, CenterY: real; Align: integer);
+const
+  SIZE = 46;
+  SHOW = 1.6;   // seconds on screen
+var
+  Age, K, A, Sz: real;
+  Lbl: UTF8String;
+  C: TCol;
+begin
+  if RatingTicks[Player] = 0 then
+    Exit;
+  Age := (SDL_GetTicks() - RatingTicks[Player]) / 1000;
+  if (Age < 0) or (Age > SHOW) then
+    Exit;
+  case RatingValue[Player] of
+    8: begin Lbl := 'PERFECT!'; C := C_YELLOW; end;
+    7: begin Lbl := 'AWESOME!'; C := C_YELLOW; end;
+    6: begin Lbl := 'GREAT!';   C := C_WHITE;  end;
+    5: begin Lbl := 'GOOD!';    C := C_WHITE;  end;
+    4: begin Lbl := 'NOT BAD!'; C := C_MUTED;  end;
+  else
+    Exit;
+  end;
+  K := EaseOut(Age / 0.18);
+  Sz := SIZE * (0.65 + 0.35 * K);
+  A := Min(1, Age / 0.08) * EnsureRange((SHOW - Age) / 0.4, 0, 1);
+  Txt(Lbl, X, CenterY - Sz / 2 - 14 * EaseOut(Age / SHOW), Sz, Align,
+    FAM_BROWN, ftOutline, C, A);
+end;
+
+{ microphone level 0..1 from the newest capture samples (RMS, -50..-12 dB) }
+function MicLevel(Player: integer): real;
+var
+  Sound: TCaptureBuffer;
+  I: integer;
+  Sum, Rms: double;
+begin
+  Result := 0;
+  if (AudioInputProcessor = nil) or (Player > High(AudioInputProcessor.Sound)) then
+    Exit;
+  Sound := AudioInputProcessor.Sound[Player];
+  if Sound = nil then
+    Exit;
+  Sum := 0;
+  Sound.LockAnalysisBuffer();
+  try
+    for I := 0 to High(Sound.AnalysisBuffer) do
+      Sum := Sum + Sqr(Sound.AnalysisBuffer[I] / 32768);
+  finally
+    Sound.UnlockAnalysisBuffer();
+  end;
+  Rms := Sqrt(Sum / Length(Sound.AnalysisBuffer));
+  if Rms < 1e-5 then
+    Exit;
+  Result := EnsureRange((20 * Log10(Rms) + 50) / 38, 0, 1);
+  // a recognised pitch means singing, not just room noise
+  if Sound.ToneValid then
+    Result := Max(Result, 0.45);
+end;
+
+{ "someone is singing": four bars under the player tag, driven by the mic }
+procedure DrawMicMeter(Player: integer; X, Y: real; const C: TCol; Dt: real);
+const
+  BARS = 4;  BAR_W = 10;  GAP = 8;  MAX_H = 28;
+var
+  Lv, H, Wobble: real;
+  I: integer;
+begin
+  Lv := MicLevel(Player);
+  // fast attack, slower release
+  if Lv > MicShown[Player] then
+    MicShown[Player] := MicShown[Player] + (Lv - MicShown[Player]) * Min(1, Dt * 18)
+  else
+    MicShown[Player] := MicShown[Player] + (Lv - MicShown[Player]) * Min(1, Dt * 5);
+  Lv := MicShown[Player];
+  for I := 0 to BARS - 1 do
+  begin
+    Wobble := 0.6 + 0.4 * Sin(SDL_GetTicks() / 1000 * (7 + I * 2.3) + I * 1.9);
+    H := 5 + (MAX_H - 5) * Lv * Wobble;
+    Rect(X + I * (BAR_W + GAP), Y + MAX_H - H, BAR_W, H, C, 0.35 + 0.65 * Min(1, Lv * 2));
+  end;
+end;
+
+{ song timeline: where the lines are sung, what is behind us, where we are }
+procedure DrawTimeline(X, Y, W, H: real);
+var
+  SongStart, SongEnd, Dur, Gap, Cur, P0, P1: real;
+  T, L: integer;
+  First, Last: integer;
+begin
+  if (CurrentSong = nil) or (LyricsState = nil) or (CurrentSong.BPM <= 0) then
+    Exit;
+  SongStart := CurrentSong.BPM * CurrentSong.Start / 60;
+  SongEnd := CurrentSong.BPM * LyricsState.TotalTime / 60;
+  Dur := SongEnd - SongStart;
+  if Dur <= 0 then
+    Exit;
+  Gap := CurrentSong.BPM * CurrentSong.GAP / 1000 / 60;
+  Cur := EnsureRange((Gap + LyricsState.MidBeat - SongStart) / Dur, 0, 1);
+
+  Rect(X, Y, W, H, C_WHITE, 0.14);
+  for T := 0 to High(CurrentSong.Tracks) do
+  begin
+    // duets: the second track only matters when two people sing
+    if (T > 0) and (PlayersPlay < 2) then
+      Break;
+    for L := 0 to High(CurrentSong.Tracks[T].Lines) do
+      with CurrentSong.Tracks[T].Lines[L] do
+      begin
+        if (Notes = nil) or (HighNote < 0) then
+          Continue;
+        First := Notes[0].StartBeat;
+        Last := Notes[HighNote].StartBeat + Notes[HighNote].Duration;
+        P0 := EnsureRange((Gap + First - SongStart) / Dur, 0, 1);
+        P1 := EnsureRange((Gap + Last - SongStart) / Dur, 0, 1);
+        if P1 <= P0 then
+          Continue;
+        if P1 <= Cur then
+          Rect(X + W * P0, Y, W * (P1 - P0), H, C_YELLOW, 1)
+        else if P0 >= Cur then
+          Rect(X + W * P0, Y, W * (P1 - P0), H, C_WHITE, 0.5)
+        else
+        begin
+          Rect(X + W * P0, Y, W * (Cur - P0), H, C_YELLOW, 1);
+          Rect(X + W * Cur, Y, W * (P1 - Cur), H, C_WHITE, 0.5);
+        end;
+      end;
+  end;
+  // playhead
+  Rect(X + W * Cur - 3, Y - 7, 6, H + 14, C_WHITE, 1);
+end;
+
 procedure HitsterDrawSing(Elapsed: real);
 const
   BAR_X = 72;  BAR_Y = 34;  BAR_W = 1776;  BAR_H = 64;
@@ -398,6 +545,7 @@ var
   Target, SeamX, LabelW, X, Y, InnerX: real;
   Year, Artist, Title: UTF8String;
   Ci: integer;
+  MicDt: real;
 begin
   EnsureLoaded;
   BeginOverlay;
@@ -411,6 +559,8 @@ begin
   begin
     SingShare := 0.5;
     Dt := 0;
+    RatingTicks[0] := 0;
+    RatingTicks[1] := 0;
   end
   else
     Dt := Now - SingTicks;
@@ -462,15 +612,37 @@ begin
   Txt(Artist, InnerX, Y + 19, 26, 0, FAM_BROWN, ftBold, C_INK, 1, X + CARD_W - 26 - InnerX);
   Txt(Title, InnerX, Y + 50, 24, 0, FAM_BROWN, ftRegular, C_INK, 1, X + CARD_W - 26 - InnerX);
 
-  Rect(X + 16, Y + CARD_H - 9, CARD_W - 32, 5, C_INK, 0.18);
-  Rect(X + 16, Y + CARD_H - 9, (CARD_W - 32) * SongProgress, 5, C_INK, 0.9);
-
   // lane tags: P1 above the upper lane on the left, P2 below the lower lane on the right
   DrawTex(TexTag1, 30, LANE1_Y - 96, 64, 40, C_WHITE, 1);
   if PlayersPlay >= 2 then
     DrawTex(TexTag2, 1920 - 30 - 64, LANE2_Y + 56, 64, 40, C_WHITE, 1);
 
+  // microphone meters under the tags, as wide as the tag
+  if MicTicks = 0 then
+    MicDt := 0
+  else
+    MicDt := (Now - MicTicks) / 1000;
+  MicTicks := Now;
+  DrawMicMeter(0, 30 + 1, LANE1_Y - 48, C_P1, MicDt);
+  if PlayersPlay >= 2 then
+    DrawMicMeter(1, 1920 - 30 - 64 + 1, LANE2_Y + 104, C_P2, MicDt);
+
+  // line ratings next to the tags, on each player's own side
+  DrawRating(0, 30 + 64 + 18, LANE1_Y - 76, 0);
+  if PlayersPlay >= 2 then
+    DrawRating(1, 1920 - 30 - 64 - 18, LANE2_Y + 76, 2);
+
+  DrawTimeline(72, 1038, 1776, 8);
+
   EndOverlay;
+end;
+
+procedure HitsterLineRating(PlayerIndex, Rating: integer);
+begin
+  if (PlayerIndex < 0) or (PlayerIndex > High(RatingValue)) then
+    Exit;
+  RatingValue[PlayerIndex] := Rating;
+  RatingTicks[PlayerIndex] := SDL_GetTicks();
 end;
 
 { ---------------------------------------------------------------------------

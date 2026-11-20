@@ -211,6 +211,7 @@ uses
   URecord,
   UParty,
   UPathUtils,
+  URemoteControl, // HITSTER
   USong,
   UUnicodeUtils,
   UWebcam,
@@ -1789,6 +1790,7 @@ begin
       // spawn rating pop-up
       Rating := Round(LinePerfection * MAX_LINE_RATING);
       Scores.SpawnPopUp(PlayerIndex, Rating, CurrentPlayer.ScoreTotalInt);
+      RemoteLineRating(PlayerIndex, Rating); // HITSTER: rating on the kiosk screen
 
       // PerfectLineTwinkle (effect), part 1
       if Ini.EffectSing = 1 then

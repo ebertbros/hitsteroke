@@ -109,6 +109,7 @@ uses
   UParty,
   UMusic,
   URecord,
+  URemoteControl, // HITSTER: bold golden notes, stars only for great singing
   URenderer,
   UScreenSingController,
   UScreenJukebox,
@@ -556,6 +557,7 @@ var
   Texture: TTexture;
   ColorR, ColorG, ColorB, A: single;
   GoldenStarPos: real;
+  GoldK: real; // HITSTER: golden notes drawn bold on the kiosk
 begin
   if (ScreenSing.settings.NotesVisible[Track]) then
   begin
@@ -619,11 +621,15 @@ begin
               A := 1;
             end;
 
+            GoldK := 1;
+            if ((NoteType = ntGolden) or (NoteType = ntRapGolden)) and RemoteKioskNotes then
+              GoldK := HITSTER_GOLD_K;
+
             // left part
             Rec.Left  := (StartBeat - CurrentSong.Tracks[Track].Lines[CurrentSong.Tracks[Track].CurrentLine].Notes[0].StartBeat) * TempR + Left + 0.5;
-            Rec.Right := Rec.Left + NotesW[PlayerIndex];
-            Rec.Top := Top - (Tone-BaseNote)*LineSpacing/2 - NotesH[PlayerIndex];
-            Rec.Bottom := Rec.Top + 2 * NotesH[PlayerIndex];
+            Rec.Right := Rec.Left + NotesW[PlayerIndex] * GoldK;
+            Rec.Top := Top - (Tone-BaseNote)*LineSpacing/2 - NotesH[PlayerIndex] * GoldK;
+            Rec.Bottom := Rec.Top + 2 * NotesH[PlayerIndex] * GoldK;
             with Texture do
             begin
               X := Rec.Left;
@@ -643,7 +649,7 @@ begin
 
             // middle part
             Rec.Left := Rec.Right;
-            Rec.Right := (StartBeat + Duration - CurrentSong.Tracks[Track].Lines[CurrentSong.Tracks[Track].CurrentLine].Notes[0].StartBeat) * TempR + Left - NotesW[PlayerIndex] - 0.5;
+            Rec.Right := (StartBeat + Duration - CurrentSong.Tracks[Track].Lines[CurrentSong.Tracks[Track].CurrentLine].Notes[0].StartBeat) * TempR + Left - NotesW[PlayerIndex] * GoldK - 0.5;
 
             // the left note is more right than the right note itself, sounds weird - so we fix that xD
             if Rec.Right <= Rec.Left then
@@ -673,7 +679,7 @@ begin
 
             // right part
             Rec.Left  := Rec.Right;
-            Rec.Right := Rec.Right + NotesW[PlayerIndex];
+            Rec.Right := Rec.Right + NotesW[PlayerIndex] * GoldK;
 
 
             if (NoteType = ntRap) or (NoteType = ntRapGolden) then
@@ -694,7 +700,8 @@ begin
             Renderer.DrawTexture(Texture);
 
             // Golden Star Patch
-            if ((NoteType = ntGolden) or (NoteType = ntRapGolden)) and (Ini.EffectSing=1) then
+            if ((NoteType = ntGolden) or (NoteType = ntRapGolden)) and (Ini.EffectSing=1) and
+               not RemoteKioskNotes then
             begin
               GoldenRec.SaveGoldenStarsRec(GoldenStarPos, Rec.Top, Rec.Right, Rec.Bottom);
             end;
@@ -714,6 +721,7 @@ var
   Texture: TTexture;
 //  R, G, B, A: real;
   NotesH2:    real;
+  GoldK:      real; // HITSTER: sung golden notes bold as well
 begin
   if (ScreenSing.Settings.InputVisible) then
   begin
@@ -728,14 +736,18 @@ begin
       begin
         with Player[PlayerIndex].Note[N] do
         begin
+          GoldK := 1;
+          if Hit and ((NoteType = ntGolden) or (NoteType = ntRapGolden)) and RemoteKioskNotes then
+            GoldK := HITSTER_GOLD_K;
+
           // Left part of note
           Rec.Left  := Left + (Start - CurrentSong.Tracks[Track].Lines[CurrentSong.Tracks[Track].CurrentLine].Notes[0].StartBeat) * TempR + 0.5;
-          Rec.Right := Rec.Left + NotesW[PlayerIndex];
+          Rec.Right := Rec.Left + NotesW[PlayerIndex] * GoldK;
 
           // Draw it in half size, if not hit
           if Hit then
           begin
-            NotesH2 := NotesH[PlayerIndex]
+            NotesH2 := NotesH[PlayerIndex] * GoldK
           end
           else
           begin
@@ -765,7 +777,7 @@ begin
 
           // Middle part of the note
           Rec.Left  := Rec.Right;
-          Rec.Right := Left + (Start + Duration - CurrentSong.Tracks[Track].Lines[CurrentSong.Tracks[Track].CurrentLine].Notes[0].StartBeat) * TempR - NotesW[PlayerIndex] - 0.5;
+          Rec.Right := Left + (Start + Duration - CurrentSong.Tracks[Track].Lines[CurrentSong.Tracks[Track].CurrentLine].Notes[0].StartBeat) * TempR - NotesW[PlayerIndex] * GoldK - 0.5;
 
           // new
           if (Start + Duration - 1 = LyricsState.CurrentBeatD) then
@@ -800,7 +812,7 @@ begin
 
           // the right part of the note
           Rec.Left  := Rec.Right;
-          Rec.Right := Rec.Right + NotesW[PlayerIndex];
+          Rec.Right := Rec.Right + NotesW[PlayerIndex] * GoldK;
 
           If (NoteType = ntRap) or (NoteType = ntRapGolden) then
             Texture := Tex_Right_Rap[PlayerIndex+1]
