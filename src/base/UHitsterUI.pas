@@ -46,8 +46,22 @@ procedure HitsterLineRating(PlayerIndex, Rating: integer);
 procedure HitsterShowNotice;
 { operator warning shown at the top of the waiting screen ('' = none) }
 procedure HitsterSetWarning(const Text: UTF8String);
+{ Hitster + TM Toys logo lockup (top right of the waiting and score screens),
+  e.g. for presentations; off by default }
+procedure HitsterSetLogos(Show: boolean);
 { score screen; Remaining < 0 hides the countdown }
 procedure HitsterDrawScore(Elapsed, Remaining, Total: real);
+
+{ card reveal after a scan: the Hitster card flips from its QR side to the
+  year side. Playable: countdown 3-2-1, the remote starts the song when
+  HitsterRevealCountdownDone is true. Not playable: "not on today's
+  playlist" for a few seconds, then the reveal ends by itself. }
+procedure HitsterStartReveal(const Artist, Title, Year: UTF8String; Playable: boolean);
+procedure HitsterCancelReveal;
+function HitsterRevealActive: boolean;
+function HitsterRevealCountdownDone: boolean;
+procedure HitsterDrawReveal;
+
 procedure HitsterUIFree;
 
 implementation
@@ -60,6 +74,7 @@ uses
   UMusic,
   UNote,
   URecord,
+  URemoteControl,
   URenderer,
   USong,
   UText;
@@ -93,7 +108,8 @@ var
   ArtDir: IPath = nil;
   Loaded: boolean = false;
 
-  TexWaiting, TexArrow, TexScoreBg: TTexture;
+  TexWaiting, TexArrow, TexScoreBg, TexLogos, TexQrCard: TTexture;
+  TexHalo, TexCardBack, TexRings, TexQrCode, TexSpot, TexGlow: TTexture;
   TexPillSing, TexPillScore, TexTag1, TexTag2: TTexture;
   TexCard, TexMini: array[0..High(CARD_NAMES)] of TTexture;
 
@@ -108,6 +124,8 @@ var
   NoticeTicks: cardinal = 0;
   // operator warning (e.g. song drive not connected)
   Warning: UTF8String = '';
+  // logo lockup on the waiting and score screens
+  ShowLogos: boolean = false;
 
   // last line rating per player (P1, P2)
   RatingValue: array[0..1] of integer;
@@ -155,6 +173,14 @@ begin
   TexWaiting   := LoadArt('waiting.png');
   TexArrow     := LoadArt('arrow.png');
   TexScoreBg   := LoadArt('score_bg.png');
+  TexLogos     := LoadArt('logos.png');
+  TexQrCard    := LoadArt('card_qr.png');
+  TexHalo      := LoadArt('halo.png');
+  TexCardBack  := LoadArt('card_back.png');
+  TexRings     := LoadArt('card_rings.png');
+  TexQrCode    := LoadArt('card_qr_code.png');
+  TexSpot      := LoadArt('spot.png');
+  TexGlow      := LoadArt('glow.png');
   TexPillSing  := LoadArt('pill_sing.png');
   TexPillScore := LoadArt('pill_score.png');
   TexTag1      := LoadArt('tag_p1.png');
@@ -299,18 +325,23 @@ begin
     Result := IntToStr(CurrentSong.Year);
 end;
 
-{ same song, same card colour }
-function CardIndex: integer;
+{ same song, same card colour (also on the reveal before the song starts) }
+function CardIndexFor(const Artist, Title: UTF8String): integer;
 var
   S: UTF8String;
   I: integer;
   H: cardinal;
 begin
-  S := SongArtist + '|' + SongTitle;
+  S := Artist + '|' + Title;
   H := 0;
   for I := 1 to Length(S) do
     H := (H * 31 + Ord(S[I])) mod 1000003;   // stays far below overflow
   Result := H mod cardinal(Length(CARD_NAMES));
+end;
+
+function CardIndex: integer;
+begin
+  Result := CardIndexFor(SongArtist, SongTitle);
 end;
 
 function SongProgress: real;
@@ -369,6 +400,21 @@ end;
 procedure HitsterSetWarning(const Text: UTF8String);
 begin
   Warning := Text;
+end;
+
+procedure HitsterSetLogos(Show: boolean);
+begin
+  ShowLogos := Show;
+end;
+
+{ logos.png (640x140, logos right-aligned) at half size in the top right
+  corner; nothing without the file }
+procedure DrawLogos;
+const
+  W = 320; H = 70; MARGIN_R = 48; TOP = 36;
+begin
+  if ShowLogos then
+    DrawTex(TexLogos, 1920 - MARGIN_R - W, TOP, W, H, C_WHITE, 1);
 end;
 
 procedure HitsterShowNotice;
@@ -431,17 +477,113 @@ end;
   waiting screen
   --------------------------------------------------------------------------- }
 
+{ ---------------------------------------------------------------------------
+  the card on the waiting screen (also the start of the reveal)
+  --------------------------------------------------------------------------- }
+
+const
+  STAGE_CARD = 520;    // card size in px, centred horizontally
+  STAGE_Y    = 118;    // top of the card
+  // one canvas unit is 2.4 px wide and 1.8 px high: rotate in screen proportions
+  CANVAS_ASPECT = (1920 / 800) / (1080 / 600);
+
+function Seconds: real;
+begin
+  Result := SDL_GetTicks() / 1000;
+end;
+
+{ texture rotated by Angle (radians) around its centre and squashed to FlipX
+  of its width after the rotation (card flip) }
+procedure DrawTexTurned(T: TTexture; X, Y, W, H: real; const C: TCol; A, Angle, FlipX: real);
+begin
+  if T = nil then
+    Exit;
+  T.Angle := Angle;
+  T.AngleAspect := CANVAS_ASPECT;
+  T.FlipX := FlipX;
+  DrawTex(T, X, Y, W, H, C, A);
+  T.Angle := 0;
+  T.FlipX := 1;
+end;
+
+{ dark brand background, a soft spotlight behind the card and three large
+  blurred glows in the Hitster colours drifting very slowly (40-70 s cycles).
+  They stay in the upper two thirds and at low strength, so the card and the
+  text below it keep their contrast. }
+procedure DrawStage;
+const
+  GLOW_SIZE = 1150;
+var
+  T, CX, CY: real;
+
+  procedure Glow(const C: TCol; A, X0, Y0, RX, RY, PX, PY, Phase: real);
+  begin
+    CX := X0 + RX * Sin(2 * Pi * T / PX + Phase);
+    CY := Y0 + RY * Cos(2 * Pi * T / PY + Phase * 0.7);
+    DrawTex(TexGlow, CX - GLOW_SIZE / 2, CY - GLOW_SIZE / 2, GLOW_SIZE, GLOW_SIZE, C, A);
+  end;
+
+begin
+  Rect(0, 0, 1920, 1080, C_BG, 1);
+  if (TexGlow = nil) and (TexSpot = nil) then
+  begin
+    DrawTex(TexWaiting, 0, 0, 1920, 1080, C_WHITE, 1);
+    Exit;
+  end;
+  T := Seconds;
+  if TexGlow <> nil then
+  begin
+    Glow(C_P1,     0.20,  420, 300, 180, 110, 53, 41, 0.0);
+    Glow(C_P2,     0.20, 1500, 360, 170, 120, 61, 47, 2.1);
+    Glow(C_YELLOW, 0.10,  960, 140, 300,  70, 71, 59, 4.2);
+  end;
+  // spotlight behind the card
+  DrawTex(TexSpot, 960 - 800, STAGE_Y + STAGE_CARD / 2 - 600, 1600, 1200, C_WHITE, 1);
+end;
+
+{ back of the Hitster card: dark card, neon rings turning like a record and
+  breathing a little, the QR code in the middle. Tilt rotates the whole card,
+  FlipX squashes it. }
+procedure DrawCardBack(X, Y, Size, Tilt, FlipX, A: real);
+var
+  R, Glow: real;
+begin
+  DrawTexTurned(TexCardBack, X - Size * 64 / 512, Y - Size * 64 / 512,
+    Size * 640 / 512, Size * 640 / 512, C_WHITE, A, Tilt, FlipX);
+  if TexCardBack = nil then
+    Rect(X + Size * (1 - FlipX) / 2, Y, Size * FlipX, Size, C_INK, A);
+  R := Size * 0.95;
+  Glow := 0.86 + 0.14 * Sin(Seconds * 1.7);
+  DrawTexTurned(TexRings, X + (Size - R) / 2, Y + (Size - R) / 2, R, R, C_WHITE, A * Glow,
+    Tilt + Seconds * 2 * Pi / 30, FlipX);
+  // the QR code stays put in the middle, like on a real card
+  R := Size * 0.40;
+  DrawTexTurned(TexQrCode, X + (Size - R) / 2, Y + (Size - R) / 2, R, R, C_WHITE, A, Tilt, FlipX);
+end;
+
+{ where the waiting card floats right now (the reveal starts from here) }
+procedure CardPose(out Y, Tilt: real);
+begin
+  Y := STAGE_Y + Sin(Seconds * 1.1) * 8;
+  Tilt := Sin(Seconds * 0.7) * 0.035;
+end;
+
 procedure HitsterDrawWaiting(const Title, Sub: UTF8String; Elapsed: real);
 var
-  Bob, Pulse: real;
+  Bob, Pulse, CY, Tilt: real;
 begin
   EnsureLoaded;
   BeginOverlay;
 
-  Rect(0, 0, 1920, 1080, C_BG, 1);
-  DrawTex(TexWaiting, 0, 0, 1920, 1080, C_WHITE, 1);
+  DrawStage;
+  if (TexCardBack <> nil) or (TexHalo <> nil) then
+  begin
+    CardPose(CY, Tilt);
+    DrawCardBack(960 - STAGE_CARD / 2, CY, STAGE_CARD, Tilt, 1, 1);
+  end;
 
   DrawCallToAction(Title, Sub, 800, 104, 948, 34);
+  DrawLogos;
 
   // for the operator: something is missing (small, top left, out of the way)
   if Warning <> '' then
@@ -549,42 +691,19 @@ begin
   end;
 end;
 
-{ x of the current beat on a note lane (pixels), or -1 outside the sung line.
-  USDX lays a line's notes out linearly from x 40 to 760 (800x600 canvas):
-  from the first note's start to the line's end beat (see UDraw.SingDrawLine). }
+{ x of the "now" line on the note lanes (pixels). The notes scroll through
+  it (UDraw.KioskDrawTrack); shown while a song has notes. }
 function NowX(Track: integer; out A: real): real;
-var
-  Beat, Len: real;
-  Cur: integer;
-  Line: PLine;
 begin
-  Result := -1;
   A := 0;
-  if (CurrentSong = nil) or (LyricsState = nil) or (Track > High(CurrentSong.Tracks)) then
+  Result := -1;
+  if (CurrentSong = nil) or (Track > High(CurrentSong.Tracks)) then
     Exit;
-  Cur := CurrentSong.Tracks[Track].CurrentLine;
-  if (Cur < 0) or (Cur >= Length(CurrentSong.Tracks[Track].Lines)) then
-    Exit;
-  Line := @CurrentSong.Tracks[Track].Lines[Cur];
-  if Length(Line^.Notes) = 0 then
-    Exit;
-  Len := Line^.EndBeat - Line^.Notes[0].StartBeat;
-  Beat := LyricsState.MidBeat - Line^.Notes[0].StartBeat;
-  if (Len <= 0) or (Beat > Len) then
-    Exit;
-  // the game shows the next line before it starts: wait at its first note,
-  // dimmed, as a "get ready" mark
-  if Beat < 0 then
-  begin
-    Beat := 0;
-    A := 0.35;
-  end
-  else
-    A := 1;
-  Result := (40 + 720 * Beat / Len) * 1920 / 800;
+  A := 1;
+  Result := (HITSTER_LANE_LEFT + (HITSTER_LANE_RIGHT - HITSTER_LANE_LEFT) * HITSTER_NOW_FRAC) * 1920 / 800;
 end;
 
-{ the "now" line moving across the notes, like the playhead on the timeline }
+{ the "now" line the notes scroll through }
 procedure DrawNowLine(X, A, Y1, Y2: real);
 begin
   if X < 0 then
@@ -789,6 +908,7 @@ begin
 
   Rect(0, 0, 1920, 1080, C_BG, 1);
   DrawTex(TexScoreBg, 0, 0, 1920, 1080, C_WHITE, 1);
+  DrawLogos;
 
   // song card (the one just sung)
   Ci := CardIndex;
@@ -916,6 +1036,177 @@ begin
 end;
 
 { ---------------------------------------------------------------------------
+  card reveal
+  --------------------------------------------------------------------------- }
+
+const
+  REV_FLIP   = 0.60;   // flip from the back (as on the waiting screen) to the year side
+  REV_COUNT  = 0.85;   // countdown starts
+  REV_STEP   = 0.80;   // one number
+  REV_NOPLAY = 6.5;    // "not on today's playlist" is shown this long
+  REV_MAX    = 12.0;   // safety: a reveal never stays longer
+
+var
+  RevArtist, RevTitle, RevYear: UTF8String;
+  RevPlayable: boolean = false;
+  RevTicks: cardinal = 0;
+  RevStartY, RevStartTilt: real;   // pose of the waiting card when the scan came
+
+procedure HitsterStartReveal(const Artist, Title, Year: UTF8String; Playable: boolean);
+begin
+  RevArtist := Artist;
+  RevTitle := Title;
+  RevYear := Year;
+  RevPlayable := Playable;
+  // a new scan during a reveal flips from the straight card, otherwise from
+  // the floating card of the waiting screen
+  if RevTicks = 0 then
+    CardPose(RevStartY, RevStartTilt)
+  else
+  begin
+    RevStartY := STAGE_Y;
+    RevStartTilt := 0;
+  end;
+  RevTicks := Max(SDL_GetTicks(), 1);
+  NoticeTicks := 0;   // the reveal replaces "try another card"
+end;
+
+procedure HitsterCancelReveal;
+begin
+  RevTicks := 0;
+end;
+
+function RevAge: real;
+begin
+  if RevTicks = 0 then
+    Result := -1
+  else
+    Result := (SDL_GetTicks() - RevTicks) / 1000;
+end;
+
+function HitsterRevealActive: boolean;
+var
+  Age: real;
+begin
+  Age := RevAge;
+  if (Age >= 0) and (((not RevPlayable) and (Age > REV_NOPLAY)) or (Age > REV_MAX)) then
+    RevTicks := 0;
+  Result := RevTicks <> 0;
+end;
+
+function HitsterRevealCountdownDone: boolean;
+begin
+  Result := (RevTicks <> 0) and RevPlayable and (RevAge >= REV_COUNT + 3 * REV_STEP);
+end;
+
+{ year side of a card, Size px square, top-left at X, Y; TA = text alpha }
+procedure DrawYearFace(X, Y, Size, ScaleX: real; Ci: integer; TA: real);
+var
+  K, W, CX: real;
+  L1, L2: UTF8String;
+begin
+  W := Size * ScaleX;
+  CX := X + Size / 2;
+  DrawTex(TexCard[Ci], CX - W / 2 - W * 64 / 512, Y - Size * 64 / 512,
+    W * 640 / 512, Size * 640 / 512, C_WHITE, 1);
+  if TexCard[Ci] = nil then
+    Rect(CX - W / 2, Y, W, Size, C_YELLOW, 1);
+  if TA <= 0 then
+    Exit;
+  K := Size / 264;   // text layout of the 264 px score card, scaled
+  Txt(RevArtist, CX, Y + 30 * K, 22 * K, 1, FAM_BROWN, ftBold, C_INK, TA, Size - 44 * K);
+  if RevYear <> '' then
+    Txt(RevYear, CX, Y + 82 * K, 88 * K, 1, FAM_BROWN, ftBoldHighRes, C_INK, TA, Size - 30 * K);
+  UseFont(FAM_BROWN, ftRegular, 20 * K);
+  SplitTitle(RevTitle, Size - 44 * K, L1, L2);
+  if L2 = '' then
+    Txt(L1, CX, Y + Size - 52 * K, 20 * K, 1, FAM_BROWN, ftRegular, C_INK, TA, Size - 44 * K)
+  else
+  begin
+    Txt(L1, CX, Y + Size - 66 * K, 20 * K, 1, FAM_BROWN, ftRegular, C_INK, TA, Size - 44 * K);
+    Txt(L2, CX, Y + Size - 42 * K, 20 * K, 1, FAM_BROWN, ftRegular, C_INK, TA, Size - 44 * K);
+  end;
+end;
+
+procedure HitsterDrawReveal;
+const
+  CARD = STAGE_CARD;  CARD_Y = STAGE_Y;
+var
+  Age, P, Ang, ScaleX, Lift, Size, X, Y, U, Sz, A, TA, W, Tilt: real;
+  N, Ci: integer;
+  Num: UTF8String;
+begin
+  Age := RevAge;
+  if Age < 0 then
+    Exit;
+  EnsureLoaded;
+  BeginOverlay;
+
+  DrawStage;
+  DrawLogos;
+
+  // the card from the waiting screen lifts, straightens and flips to its
+  // year side
+  Ci := CardIndexFor(RevArtist, RevTitle);
+  P := EnsureRange(Age / REV_FLIP, 0, 1);
+  Ang := Pi * (1 - Cos(Pi * P)) / 2;            // ease in-out, 0..pi
+  ScaleX := Max(Abs(Cos(Ang)), 0.02);
+  Lift := 1 + 0.08 * Sin(Ang);                  // the card comes closer mid-flip
+  Size := CARD * Lift;
+  X := 960 - Size / 2;
+  Y := RevStartY + (CARD_Y - RevStartY) * EaseOut(P) + (CARD - Size) / 2;
+  Tilt := RevStartTilt * (1 - EaseOut(P * 1.5));
+  if Ang < Pi / 2 then
+    DrawCardBack(X, Y, Size, Tilt, ScaleX, 1)
+  else
+  begin
+    TA := EnsureRange((Age - REV_FLIP) / 0.25, 0, 1);
+    DrawYearFace(X, Y, Size, ScaleX, Ci, TA);
+  end;
+
+  if RevPlayable then
+  begin
+    // 3-2-1: each number pops in and fades out
+    if Age >= REV_COUNT then
+    begin
+      N := 3 - Trunc((Age - REV_COUNT) / REV_STEP);
+      U := Frac((Age - REV_COUNT) / REV_STEP);
+      if N >= 1 then
+      begin
+        Num := IntToStr(N);
+        Sz := 200 * (1.35 - 0.35 * EaseOut(U * 2.5));
+        A := 1 - EnsureRange((U - 0.7) / 0.3, 0, 1);
+        Txt(Num, 960, 672 + (200 - Sz) / 2, Sz, 1, FAM_BROWN, ftBoldHighRes, C_YELLOW, A);
+      end
+      else
+        Txt('Sing!', 960, 700, 130, 1, FAM_BROWN, ftBoldHighRes, C_YELLOW, 1);
+    end
+    else
+      Txt('Get ready', 960, 712, 60, 1, FAM_BROWN, ftBold, C_WHITE,
+        EnsureRange((Age - 0.3) / 0.3, 0, 1));
+
+    // who takes which mic
+    UseFont(FAM_BROWN, ftBold, 34);
+    W := TextPx('Left mic') + TextPx('Right mic') + 2 * (64 + 18) + 120;
+    X := 960 - W / 2;
+    DrawTex(TexTag1, X, 928, 64, 40, C_WHITE, 1);
+    Txt('Left mic', X + 82, 930, 34, 0, FAM_BROWN, ftBold, C_WHITE, 0.9);
+    X := 960 + W / 2 - 64;
+    DrawTex(TexTag2, X, 928, 64, 40, C_WHITE, 1);
+    Txt('Right mic', X - 18, 930, 34, 2, FAM_BROWN, ftBold, C_WHITE, 0.9);
+  end
+  else
+  begin
+    A := EnsureRange((Age - REV_FLIP) / 0.3, 0, 1);
+    Txt('Not on today''s playlist', 960, 690, 80, 1, FAM_BROWN, ftBoldHighRes, C_YELLOW, A, 1700);
+    Txt('Sorry, we can''t play this song today. Try another card!', 960, 812, 36, 1,
+      FAM_LIGHT, ftRegular, C_WHITE, A, 1700);
+  end;
+
+  EndOverlay;
+end;
+
+{ ---------------------------------------------------------------------------
   setup
   --------------------------------------------------------------------------- }
 
@@ -931,6 +1222,14 @@ begin
   FreeTex(TexWaiting);
   FreeTex(TexArrow);
   FreeTex(TexScoreBg);
+  FreeTex(TexQrCard);
+  FreeTex(TexHalo);
+  FreeTex(TexCardBack);
+  FreeTex(TexRings);
+  FreeTex(TexQrCode);
+  FreeTex(TexSpot);
+  FreeTex(TexGlow);
+  FreeTex(TexLogos);
   FreeTex(TexPillSing);
   FreeTex(TexPillScore);
   FreeTex(TexTag1);

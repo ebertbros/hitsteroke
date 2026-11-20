@@ -141,6 +141,20 @@ def qr_svg(seed=11, n=25):
             '<g fill="#0d0d0f">%s</g></svg>') % (n + 2, n + 2, n + 2, n + 2, "".join(cells))
 
 
+def render_logos(r, out, hitster_uri, tmtoys_uri):
+    """Hitster + TM Toys side by side, one lockup (not one per corner: two
+    corners read as two teams). Official versions for dark backgrounds:
+    Hitster primary logo "on Black BG", TM Toys white logo. Shown only with
+    [Remote] Logos=1 or the remote command LOGOS on."""
+    r.render(out / "logos.png", 640, 140, """
+      .l{position:absolute;inset:0;display:flex;align-items:center;justify-content:flex-end;gap:34px}
+      .h{height:104px}
+      .d{width:3px;height:84px;background:rgba(255,255,255,.35);border-radius:2px}
+      .t{height:112px}
+    """, '<div class="l"><img class="h" src="%s"><div class="d"></div><img class="t" src="%s"></div>'
+       % (hitster_uri, tmtoys_uri))
+
+
 def render_art(r, out, vinyl_uri):
     out.mkdir(parents=True, exist_ok=True)
 
@@ -169,6 +183,50 @@ def render_art(r, out, vinyl_uri):
         <div class="t">Never Gonna<br>Give You Up</div></div></div>
       <div class="card qrc"><div class="rings"></div><div class="q">%s</div></div>
       </div></div>""" % qr_svg())
+
+    # waiting screen layers (animated by the game): faint halo of rings behind,
+    # the back of one Hitster card, and its neon rings on their own layer so
+    # they can turn. Card 512 px + 64 px shadow pad; rings at 2x for sharpness.
+    r.render(out / "halo.png", 1800, 1800,
+             "div{position:absolute;inset:0;background:url(%s) center/contain no-repeat;opacity:.10}" % vinyl_uri,
+             "<div></div>")
+    # waiting-screen background: a soft spotlight behind the card and a white
+    # glow blob that the game tints in the brand colours and lets drift
+    r.render(out / "spot.png", 1600, 1200, """
+      div{position:absolute;inset:0;background:radial-gradient(ellipse 50% 50% at 50% 50%,
+          rgba(150,215,235,.26) 0,rgba(150,215,235,.10) 45%,rgba(150,215,235,0) 100%)}
+    """, "<div></div>")
+    r.render(out / "glow.png", 512, 512, """
+      div{position:absolute;inset:0;background:radial-gradient(circle at 50% 50%,
+          rgba(255,255,255,1) 0,rgba(255,255,255,.55) 30%,rgba(255,255,255,.18) 55%,rgba(255,255,255,0) 72%)}
+    """, "<div></div>")
+    r.render(out / "card_back.png", 640, 640, """
+      .c{position:absolute;left:64px;top:64px;width:512px;height:512px;border-radius:22px;background:#141416;
+         box-shadow:0 1px 0 rgba(255,255,255,.08) inset,0 30px 50px rgba(0,0,0,.5)}
+    """, '<div class="c"></div>')
+    r.render(out / "card_rings.png", 960, 960, """
+      div{position:absolute;inset:14px;background:url(%s) center/contain no-repeat;
+          filter:drop-shadow(0 0 6px rgba(255,255,255,.35)) saturate(1.15)}
+    """ % vinyl_uri, "<div></div>")
+
+    # QR code in the middle of the card back (does not turn with the rings):
+    # white code with a dark margin that separates it from the rings
+    r.render(out / "card_qr_code.png", 400, 400, """
+      .m{position:absolute;inset:0;border-radius:38px;background:#141416}
+      .q{position:absolute;inset:18px;border-radius:24px;overflow:hidden}
+      .q svg{width:100%%;height:100%%;display:block}
+    """, '<div class="m"><div class="q">%s</div></div>' % qr_svg())
+
+    # QR side of a card for the reveal animation (card 512 px + 64 px shadow pad)
+    r.render(out / "card_qr.png", 640, 640, """
+      .c{position:absolute;left:64px;top:64px;width:512px;height:512px;border-radius:22px;background:#141416;
+         overflow:hidden;box-shadow:0 1px 0 rgba(255,255,255,.08) inset,0 30px 50px rgba(0,0,0,.5)}
+      .rings{position:absolute;inset:16px;background:url(%s) center/contain no-repeat;
+         filter:drop-shadow(0 0 3px rgba(255,255,255,.35)) saturate(1.15)}
+      .q{position:absolute;left:50%%;top:50%%;width:180px;height:180px;transform:translate(-50%%,-50%%);
+         border-radius:14px;overflow:hidden;box-shadow:0 0 0 7px #141416}
+      .q svg{width:100%%;height:100%%;display:block}
+    """ % vinyl_uri, '<div class="c"><div class="rings"></div><div class="q">%s</div></div>' % qr_svg())
 
     r.render(out / "arrow.png", 72, 46, "", """<svg width="72" height="46" viewBox="0 0 72 46">
       <path d="M4 4 H68 L36 42 Z" fill="%s" stroke="%s" stroke-width="6" stroke-linejoin="round"/></svg>""" % (YELLOW, YELLOW))
@@ -523,6 +581,11 @@ def main():
     vinyl_src = brand / "drive/Vinyl circles.ai"
     if not vinyl_src.is_file():
         die("brak " + str(vinyl_src))
+    logo_src = brand / "drive/Hitster Primary Logo_on Black BG_NO BG.ai"
+    tmtoys_src = brand / "tmtoys/tm-toys-logo-white.png"
+    for f in (logo_src, tmtoys_src):
+        if not f.is_file():
+            die("brak " + str(f))
 
     with tempfile.TemporaryDirectory() as tmpd:
         tmp = pathlib.Path(tmpd)
@@ -530,6 +593,9 @@ def main():
         shutil.copy2(vinyl_src, tmp / "vinyl.pdf")
         subprocess.run(["sips", "-s", "format", "png", "-Z", "1800", str(tmp / "vinyl.pdf"),
                         "--out", str(tmp / "vinyl.png")], check=True, capture_output=True)
+        shutil.copy2(logo_src, tmp / "hitster_logo.pdf")
+        subprocess.run(["sips", "-s", "format", "png", "-Z", "1200", str(tmp / "hitster_logo.pdf"),
+                        "--out", str(tmp / "hitster_logo.png")], check=True, capture_output=True)
         fonts_css = "".join(
             "@font-face{font-family:B;src:url(%s);font-weight:%d}"
             % (data_uri(brand / "drive" / ("BrownStd-%s.otf" % n), "font/otf"), w)
@@ -542,6 +608,8 @@ def main():
         build_theme(args.game, userdir, r)
         print("grafiki")
         render_art(r, art_dir, data_uri(tmp / "vinyl.png", "image/png"))
+        render_logos(r, art_dir, data_uri(tmp / "hitster_logo.png", "image/png"),
+                     data_uri(tmtoys_src, "image/png"))
         print("  grafiki: " + str(art_dir))
         if songs is not None:
             print("  piosenki: " + str(songs) + "  (PLAY hitster/<folder> = " + str(songs / "hitster") + "/<folder>)")

@@ -12,6 +12,10 @@
  *   FINISH              ends the song now and shows the results
  *   MENU [main|options|record]  opens a menu for the operator (not while singing)
  *   SHOT [<file.jpg>]   saves what is on screen (operator / tests)
+ *   LOGOS on|off        shows / hides the logo lockup (live, not saved)
+ *   UNAVAILABLE <artist>|<title>|<year>
+ *                       a card that is not in today's library: the card is
+ *                       revealed with "not on today's playlist"
  *
  * Configuration lives in its own [Remote] section of config.ini. With
  * Enabled=0 (default) every hook in this unit is a no-op and the game
@@ -52,6 +56,12 @@ procedure RemoteLineRating(PlayerIndex, Rating: integer);
 
 const
   HITSTER_GOLD_K = 1.5; // golden (bonus) notes are this much thicker on the kiosk
+  // scrolling notes on the kiosk: the "now" line stands at this fraction of the
+  // note lane (x 40..760 of the 800x600 canvas), the lane shows this many seconds
+  HITSTER_LANE_LEFT  = 40;
+  HITSTER_LANE_RIGHT = 760;
+  HITSTER_NOW_FRAC   = 1 / 3;
+  HITSTER_WINDOW_SEC = 4.5;
 
 { kiosk note style: golden notes bold instead of permanently twinkling;
   stars only reward great singing (golden note hit, perfect note / line) }
@@ -68,7 +78,10 @@ uses
   {$IFDEF UNIX}
   BaseUnix,
   Sockets,
+  termio,
   {$ENDIF}
+  fpjson,
+  jsonparser,
   SDL2,
   UCommon,
   UDisplay,
@@ -97,6 +110,11 @@ const
   DEFAULT_TEASER_VOLUME = 70;
   MAX_DATAGRAM        = 4096;
   LOG_SOURCE          = 'Remote';
+  SCAN_SOURCE         = 'Scanner';
+  SCAN_DEBOUNCE_MS    = 3000;   // the same card again within this time is ignored
+  SCAN_SILENCE_MS     = 150;    // a code without CR/LF ends after this much silence
+  SCAN_RETRY_MS       = 2000;   // reopen a disconnected scanner this often
+  SCAN_UNKNOWN        = 'hitster/__nieznana_karta__'; // no such folder: "Try another card"
 
 type
   TRemoteAction = (raNone, raPlay, raStop, raFinish);
@@ -111,6 +129,8 @@ type
     FWaitingText:  UTF8String;
     FWaitingSub:   UTF8String;
     FDesign:       boolean;       // Hitster kiosk screens (UHitsterUI) instead of plain USDX
+    FReveal:       boolean;       // card flip + 3-2-1 before a song starts
+    FRevealPath:   UTF8String;    // song whose reveal is running
     FTeaserVolume: integer;       // score screen song excerpt, percent
     FArtDir:       UTF8String;    // art for UHitsterUI, empty = <user dir>/hitster
 
@@ -127,6 +147,24 @@ type
     FScreen:       PMenu;         // current screen as seen by the last Step
     FScreenT0:     cardinal;      // ticks when FScreen became current
     FShotPath:     UTF8String;    // pending SHOT, saved after the next frame
+
+    // built-in card scanner (Honeywell in USB serial mode, see PollScanner)
+    FScanDev:      UTF8String;    // [Remote] Scanner: auto, a device path, or off
+    FScanFd:       integer;       // open serial device, -1 = none
+    FScanPath:     UTF8String;    // path of the open device
+    FScanNextTry:  cardinal;      // ticks of the next open attempt
+    FScanBuf:      AnsiString;    // bytes of the code being received
+    FScanLastByte: cardinal;
+    FScanLastCode: AnsiString;    // debounce
+    FScanLastT:    cardinal;
+    FScanBusyCode: AnsiString;    // scan waiting for the song list (BUSY)
+    FScanBusyN:    integer;
+    FScanBusyT:    cardinal;
+    FMapPath:      UTF8String;    // scanner_map.json
+    FMapAge:       longint;       // file age of the loaded map, reloaded when it changes
+    FMapCheckT:    cardinal;
+    FMapCards:     TStringList;   // card key -> song folder
+    FMapInfo:      TStringList;   // card key -> artist|title|year
 
     FCurrentPath:  UTF8String;    // folder of the song started by the remote
     FLastError:    UTF8String;
@@ -145,7 +183,14 @@ type
     function  CmdStatus: UTF8String;
     function  CmdShot(const Arg: UTF8String): UTF8String;
     function  CmdMenu(const Arg: UTF8String): UTF8String;
+    function  CmdUnavailable(const Arg: UTF8String): UTF8String;
+    function  CmdLogos(const Arg: UTF8String): UTF8String;
     procedure SaveShot;
+
+    procedure LoadScannerMap;
+    procedure PollScanner;
+    procedure CloseScanner;
+    procedure HandleScan(const Code: AnsiString);
 
     function  SongsReady: boolean;
     function  FindSong(const Request: UTF8String; out Error: UTF8String): integer;
@@ -155,6 +200,7 @@ type
     function  EnsureSongScreen(Cur: PMenu): boolean;
     procedure Step;
     procedure StartPendingSong;
+    procedure StartReveal;
   public
     constructor Create;
     destructor Destroy; override;
@@ -300,16 +346,25 @@ begin
   inherited Create;
   FSocket := -1;
   FSocketOpen := false;
+  FScanFd := -1;
+  FMapAge := -1;
+  FMapCards := TStringList.Create;
+  FMapInfo := TStringList.Create;
   FAction := raNone;
   FLastStartMs := -1;
   LoadConfig;
   if FEnabled then
     OpenSocket;
+  if FEnabled and (FScanDev <> 'off') then
+    LoadScannerMap;
 end;
 
 destructor TRemoteControl.Destroy;
 begin
   CloseSocket;
+  CloseScanner;
+  FMapCards.Free;
+  FMapInfo.Free;
   inherited;
 end;
 
@@ -320,8 +375,10 @@ var
   Keys: TStringList;
   Dir, Missing, AspectStr: UTF8String;
   AW, AH: integer;
+  Logos: boolean;
 begin
   FEnabled := false;
+  Logos := false;
   FSkipScore := false;
   FScoreSeconds := DEFAULT_SCORE_SECONDS;
   FPort := DEFAULT_PORT;
@@ -345,8 +402,13 @@ begin
     FWaitingText := IniFile.ReadString(REMOTE_SECTION, 'WaitingText', '');
     FWaitingSub  := IniFile.ReadString(REMOTE_SECTION, 'WaitingSubText', '');
     FDesign      := IniFile.ReadInteger(REMOTE_SECTION, 'Design', 1) = 1;
+    FReveal      := IniFile.ReadInteger(REMOTE_SECTION, 'Reveal', 1) = 1;
     FTeaserVolume := IniFile.ReadInteger(REMOTE_SECTION, 'TeaserVolume', DEFAULT_TEASER_VOLUME);
     FArtDir      := IniFile.ReadString(REMOTE_SECTION, 'ArtDir', '');
+    Logos        := IniFile.ReadInteger(REMOTE_SECTION, 'Logos', 0) = 1;
+    FScanDev     := LowerCase(Trim(IniFile.ReadString(REMOTE_SECTION, 'Scanner', 'auto')));
+    if FScanDev = '' then FScanDev := 'off';
+    FMapPath     := Trim(IniFile.ReadString(REMOTE_SECTION, 'ScannerMap', ''));
     AspectStr    := Trim(IniFile.ReadString(REMOTE_SECTION, 'Aspect', '16:9'));
 
     // song folders on an external drive: if the drive is not connected the
@@ -397,6 +459,9 @@ begin
   end
   else
     HitsterSetWarning('');
+
+  // Hitster + TM Toys logos on the waiting and score screens (presentations)
+  HitsterSetLogos(Logos);
 
   if FDesign then
   begin
@@ -530,8 +595,12 @@ begin
     Result := CmdStatus
   else if Cmd = 'SHOT' then
     Result := CmdShot(Arg)
+  else if Cmd = 'UNAVAILABLE' then
+    Result := CmdUnavailable(Arg)
   else if Cmd = 'MENU' then
     Result := CmdMenu(LowerCase(Arg))
+  else if Cmd = 'LOGOS' then
+    Result := CmdLogos(LowerCase(Arg))
   else if Cmd = 'FINISH' then
   begin
     if IsScreen(Display.CurrentScreen, @ScreenSing) then
@@ -756,6 +825,45 @@ end;
 
 { operator access to the menus without a keyboard: the waiting screen covers
   the song list, so this is the way to the microphone setup on the stand }
+{ the scanner knows the card (from the Jumbo card list) but the song is not
+  in today's library: show the card and say so, instead of a bare
+  "try another card". Format: artist|title|year (year may be empty). }
+function TRemoteControl.CmdUnavailable(const Arg: UTF8String): UTF8String;
+var
+  Parts: TStringList;
+  Artist, Title, Year: UTF8String;
+begin
+  if IsScreen(Display.CurrentScreen, @ScreenSing) then
+  begin
+    // a stray scan must not disturb a running duel
+    Result := '{"ok":false,"cmd":"UNAVAILABLE","error":"SINGING"}';
+    Exit;
+  end;
+  Parts := TStringList.Create;
+  try
+    Parts.StrictDelimiter := true;
+    Parts.Delimiter := '|';
+    Parts.DelimitedText := Arg;
+    Artist := '';
+    Title := '';
+    Year := '';
+    if Parts.Count > 0 then Artist := Trim(Parts[0]);
+    if Parts.Count > 1 then Title := Trim(Parts[1]);
+    if Parts.Count > 2 then Year := Trim(Parts[2]);
+  finally
+    Parts.Free;
+  end;
+  // the newest scan wins over a song that is still counting down
+  if FAction = raPlay then
+    FAction := raNone;
+  FRevealPath := '';
+  if FDesign then
+    HitsterStartReveal(Artist, Title, Year, false);
+  Log.LogStatus('UNAVAILABLE "' + Artist + ' - ' + Title + '"', LOG_SOURCE);
+  Result := '{"ok":true,"cmd":"UNAVAILABLE","artist":' + JsonStr(Artist) +
+            ',"title":' + JsonStr(Title) + ',"year":' + JsonStr(Year) + '}';
+end;
+
 function TRemoteControl.CmdMenu(const Arg: UTF8String): UTF8String;
 var
   Target: PMenu;
@@ -782,6 +890,26 @@ begin
   Display.FadeTo(Target);
   Log.LogStatus('MENU ' + Arg, LOG_SOURCE);
   Result := '{"ok":true,"cmd":"MENU"}';
+end;
+
+{ logo lockup on the waiting and score screens, switched live (config.ini
+  [Remote] Logos is the value at start) }
+function TRemoteControl.CmdLogos(const Arg: UTF8String): UTF8String;
+var
+  Show: boolean;
+begin
+  if (Arg = 'on') or (Arg = '1') then
+    Show := true
+  else if (Arg = 'off') or (Arg = '0') then
+    Show := false
+  else
+  begin
+    Result := '{"ok":false,"cmd":"LOGOS","error":"BAD_ARG","detail":"on or off"}';
+    Exit;
+  end;
+  HitsterSetLogos(Show);
+  Log.LogStatus('LOGOS ' + Arg, LOG_SOURCE);
+  Result := '{"ok":true,"cmd":"LOGOS","logos":' + JsonBool(Show) + '}';
 end;
 
 function TRemoteControl.CmdShot(const Arg: UTF8String): UTF8String;
@@ -874,6 +1002,22 @@ begin
   Result := true;
 end;
 
+{ card data for the reveal, from the song file (#ARTIST, #TITLE, #YEAR = the
+  year printed on the card) }
+procedure TRemoteControl.StartReveal;
+var
+  Index: integer;
+  Err, Year: UTF8String;
+begin
+  Index := FindSong(FPendingPath, Err);
+  if Index < 0 then
+    Exit;   // StartPendingSong reports it
+  Year := '';
+  if CatSongs.Song[Index].Year > 0 then
+    Year := IntToStr(CatSongs.Song[Index].Year);
+  HitsterStartReveal(CatSongs.Song[Index].Artist, CatSongs.Song[Index].Title, Year, true);
+end;
+
 procedure TRemoteControl.StartPendingSong;
 var
   Index: integer;
@@ -937,6 +1081,7 @@ begin
     if IsScreen(Cur, @ScreenSing) then
     begin
       FAwaitSing := false;
+      HitsterCancelReveal;
       FLastStartMs := integer(SDL_GetTicks() - FPlayT0);
       Inc(FStartCount);
       Log.LogStatus(Format('song started in %d ms: "%s"', [FLastStartMs, FCurrentPath]), LOG_SOURCE);
@@ -944,6 +1089,7 @@ begin
     else if IsScreen(Cur, @ScreenSong) then
     begin
       FAwaitSing := false;
+      HitsterCancelReveal;
       if (ScreenPopupError <> nil) and ScreenPopupError.Visible then
       begin
         FLastError := 'LOAD_FAILED: ' + FCurrentPath;
@@ -1046,10 +1192,25 @@ begin
       begin
         FAction := raNone;
         FCurrentPath := '';
+        FRevealPath := '';
+        HitsterCancelReveal;
       end;
     raPlay:
       begin
+        // the card flips and counts down 3-2-1 on the waiting screen first
+        if FDesign and FReveal then
+        begin
+          if FRevealPath <> FPendingPath then
+          begin
+            FRevealPath := FPendingPath;
+            StartReveal;
+            Exit;
+          end;
+          if HitsterRevealActive and not HitsterRevealCountdownDone then
+            Exit;
+        end;
         FAction := raNone;
+        FRevealPath := '';
         StartPendingSong;
       end;
   end;
@@ -1060,7 +1221,289 @@ begin
   if not FEnabled then
     Exit;
   PollSocket;
+  try
+    PollScanner;
+  except
+    on E: Exception do
+      Log.LogError('scanner failed: ' + E.Message, SCAN_SOURCE);
+  end;
   Step;
+end;
+
+{ ---------------------------------------------------------------------------
+  built-in card scanner
+
+  The Honeywell scanner runs in USB Serial Emulation (CDC-ACM): the codes come
+  from /dev/cu.usbmodem*, not as keystrokes, so a scan never reaches the game
+  window. A Hitster card holds www.hitstergame.com/<lang>/<sku>/<number>; the
+  card key sku/number is looked up in scanner_map.json (hitster/cards/
+  build_scanner_map.py): "cards" key -> song folder, "info" key -> artist,
+  title, year. Same behaviour as hitster/cards/skaner.py, which is no longer
+  needed (and must not run at the same time: both would read the port).
+  --------------------------------------------------------------------------- }
+
+{ 'www.hitstergame.com/pl/aaae0005/00171' -> 'aaae0005/00171', '' if not a card }
+function ParseCardKey(const Code: AnsiString): AnsiString;
+var
+  S, Sku, Num: AnsiString;
+  Parts: TStringList;
+  I: integer;
+begin
+  Result := '';
+  S := LowerCase(Trim(Code));
+  if Pos('https://', S) = 1 then Delete(S, 1, 8)
+  else if Pos('http://', S) = 1 then Delete(S, 1, 7);
+  if Pos('www.', S) = 1 then Delete(S, 1, 4);
+  if Pos('hitstergame.com/', S) <> 1 then
+    Exit;
+  Delete(S, 1, Length('hitstergame.com/'));
+  while (S <> '') and (S[Length(S)] = '/') do
+    Delete(S, Length(S), 1);
+  Parts := TStringList.Create;
+  try
+    Parts.StrictDelimiter := true;
+    Parts.Delimiter := '/';
+    Parts.DelimitedText := S;
+    if Parts.Count <> 3 then
+      Exit;
+    Sku := Parts[1];
+    Num := Parts[2];
+  finally
+    Parts.Free;
+  end;
+  if (Length(Sku) < 4) or (Length(Sku) > 12) or (Num = '') or (Length(Num) > 6) then
+    Exit;
+  for I := 1 to Length(Sku) do
+    if not (Sku[I] in ['a'..'z', '0'..'9']) then Exit;
+  for I := 1 to Length(Num) do
+    if not (Num[I] in ['0'..'9']) then Exit;
+  Result := Sku + '/' + Format('%.5d', [StrToInt(Num)]);
+end;
+
+procedure TRemoteControl.LoadScannerMap;
+var
+  Stream: TFileStream;
+  Data: TJSONData;
+  Obj, Cards, Info: TJSONObject;
+  Arr: TJSONArray;
+  I: integer;
+  Age: longint;
+  Path: UTF8String;
+begin
+  Path := FMapPath;
+  if Path = '' then
+    Path := Platform.GetGameUserPath.Append('hitster').Append('scanner_map.json').ToNative;
+  Age := FileAge(Path);
+  if Age = FMapAge then
+    Exit;
+  FMapAge := Age;
+  FMapCards.Clear;
+  FMapInfo.Clear;
+  if Age = -1 then
+  begin
+    Log.LogError('no scanner map: ' + Path + ' (every card is unknown)', SCAN_SOURCE);
+    Exit;
+  end;
+  Data := nil;
+  Stream := TFileStream.Create(Path, fmOpenRead or fmShareDenyNone);
+  try
+    Data := GetJSON(Stream);
+    if not (Data is TJSONObject) then
+      raise Exception.Create('not a JSON object');
+    Obj := TJSONObject(Data);
+    Cards := Obj.Find('cards') as TJSONObject;
+    if Cards <> nil then
+      for I := 0 to Cards.Count - 1 do
+        FMapCards.Add(Cards.Names[I] + '=' + Cards.Items[I].AsString);
+    Info := Obj.Find('info') as TJSONObject;
+    if Info <> nil then
+      for I := 0 to Info.Count - 1 do
+        if (Info.Items[I] is TJSONArray) and (TJSONArray(Info.Items[I]).Count >= 3) then
+        begin
+          Arr := TJSONArray(Info.Items[I]);
+          FMapInfo.Add(Info.Names[I] + '=' + Arr.Strings[0] + '|' + Arr.Strings[1] + '|' + Arr.Strings[2]);
+        end;
+    FMapCards.Sorted := true;
+    FMapInfo.Sorted := true;
+    Log.LogStatus(Format('scanner map: %d cards with a song, %d known cards (%s)',
+      [FMapCards.Count, FMapInfo.Count, Path]), SCAN_SOURCE);
+  except
+    on E: Exception do
+      Log.LogError('scanner map not loaded: ' + Path + ': ' + E.Message, SCAN_SOURCE);
+  end;
+  Data.Free;
+  Stream.Free;
+end;
+
+procedure TRemoteControl.CloseScanner;
+begin
+{$IFDEF UNIX}
+  if FScanFd >= 0 then
+    fpClose(FScanFd);
+{$ENDIF}
+  FScanFd := -1;
+  FScanBuf := '';
+end;
+
+procedure TRemoteControl.HandleScan(const Code: AnsiString);
+var
+  Key, Folder, Info, Reply: AnsiString;
+  I: integer;
+begin
+  if (Code = FScanLastCode) and (SDL_GetTicks() - FScanLastT < SCAN_DEBOUNCE_MS) then
+  begin
+    Log.LogStatus('scan ' + Code + ': ignored (same card again)', SCAN_SOURCE);
+    Exit;
+  end;
+  FScanLastCode := Code;
+  FScanLastT := SDL_GetTicks();
+  FScanBusyCode := '';
+
+  Key := ParseCardKey(Code);
+  Folder := '';
+  Info := '';
+  if Key <> '' then
+  begin
+    I := FMapCards.IndexOfName(Key);
+    if I >= 0 then Folder := FMapCards.ValueFromIndex[I];
+    I := FMapInfo.IndexOfName(Key);
+    if I >= 0 then Info := FMapInfo.ValueFromIndex[I];
+  end;
+
+  if Key = '' then
+  begin
+    Log.LogStatus('scan ' + Code + ': not a Hitster card', SCAN_SOURCE);
+    Reply := CmdPlay(SCAN_UNKNOWN);
+  end
+  else if (Folder = '') and (Info <> '') then
+  begin
+    Log.LogStatus('scan ' + Key + ': no song today (' + Info + ')', SCAN_SOURCE);
+    Reply := CmdUnavailable(Info);
+  end
+  else if Folder = '' then
+  begin
+    Log.LogStatus('scan ' + Key + ': unknown card', SCAN_SOURCE);
+    Reply := CmdPlay(SCAN_UNKNOWN);
+  end
+  else
+  begin
+    Log.LogStatus('scan ' + Key + ' -> ' + Folder, SCAN_SOURCE);
+    Reply := CmdPlay(Folder);
+    // in the map but not on the disk (not downloaded yet)
+    if (Pos('"error":"NOT_FOUND"', Reply) > 0) and (Info <> '') then
+      Reply := CmdUnavailable(Info);
+  end;
+
+  // the song list is still loading (game start): try again for a few seconds
+  if Pos('"error":"BUSY"', Reply) > 0 then
+  begin
+    FScanBusyCode := Code;
+    FScanBusyN := 5;
+    FScanBusyT := SDL_GetTicks() + 1000;
+    FScanLastCode := '';
+  end;
+end;
+
+procedure TRemoteControl.PollScanner;
+{$IFDEF UNIX}
+var
+  SR: TSearchRec;
+  Path, Code: UTF8String;
+  Buf: array[0..511] of AnsiChar;
+  N, I: integer;
+  T: termios;
+  Now: cardinal;
+{$ENDIF}
+begin
+{$IFDEF UNIX}
+  if FScanDev = 'off' then
+    Exit;
+  Now := SDL_GetTicks();
+
+  // the map can be rebuilt while the game runs
+  if Now >= FMapCheckT then
+  begin
+    FMapCheckT := Now + 2000;
+    LoadScannerMap;
+  end;
+
+  if (FScanBusyCode <> '') and (Now >= FScanBusyT) then
+  begin
+    Code := FScanBusyCode;
+    Dec(FScanBusyN);
+    if FScanBusyN <= 0 then
+      FScanBusyCode := ''
+    else
+    begin
+      N := FScanBusyN;
+      HandleScan(Code);
+      if FScanBusyCode <> '' then
+        FScanBusyN := N;
+    end;
+  end;
+
+  // open the scanner (and again after it was unplugged)
+  if FScanFd < 0 then
+  begin
+    if Now < FScanNextTry then
+      Exit;
+    FScanNextTry := Now + SCAN_RETRY_MS;
+    Path := '';
+    if FScanDev = 'auto' then
+    begin
+      if FindFirst('/dev/cu.usbmodem*', faAnyFile, SR) = 0 then
+        Path := '/dev/' + SR.Name;
+      FindClose(SR);
+    end
+    else
+      Path := FScanDev;
+    if (Path = '') or not FileExists(Path) then
+      Exit;
+    FScanFd := fpOpen(Path, O_RDONLY or O_NONBLOCK or O_NOCTTY);
+    if FScanFd < 0 then
+      Exit;
+    if TCGetAttr(FScanFd, T) = 0 then
+    begin
+      CFMakeRaw(T);
+      TCSetAttr(FScanFd, TCSANOW, T);
+    end;
+    FScanPath := Path;
+    FScanBuf := '';
+    Log.LogStatus('scanner connected: ' + Path, SCAN_SOURCE);
+  end;
+
+  // read whatever arrived; a code ends with CR/LF or after a short silence
+  repeat
+    N := fpRead(FScanFd, Buf[0], SizeOf(Buf));
+    if N > 0 then
+    begin
+      for I := 0 to N - 1 do
+        if Buf[I] in [#13, #10] then
+        begin
+          if Trim(FScanBuf) <> '' then
+            HandleScan(Trim(FScanBuf));
+          FScanBuf := '';
+        end
+        else if Buf[I] <> #0 then
+          FScanBuf := FScanBuf + Buf[I];
+      FScanLastByte := SDL_GetTicks();
+    end
+    else if (N = 0) or ((N < 0) and (fpGetErrno <> ESysEAGAIN)) then
+    begin
+      Log.LogWarn('scanner disconnected: ' + FScanPath, SCAN_SOURCE);
+      CloseScanner;
+      Exit;
+    end;
+  until N <= 0;
+
+  if (FScanBuf <> '') and (SDL_GetTicks() - FScanLastByte >= SCAN_SILENCE_MS) then
+  begin
+    Code := Trim(FScanBuf);
+    FScanBuf := '';
+    if Code <> '' then
+      HandleScan(Code);
+  end;
+{$ENDIF}
 end;
 
 procedure TRemoteControl.DrawOverlay;
@@ -1082,7 +1525,9 @@ begin
       Elapsed := 0
     else
       Elapsed := (SDL_GetTicks() - FScreenT0) / 1000;
-    if IsScreen(Cur, @ScreenSing) then
+    if (not IsScreen(Cur, @ScreenSing)) and HitsterRevealActive then
+      HitsterDrawReveal
+    else if IsScreen(Cur, @ScreenSing) then
       HitsterDrawSing(Elapsed)
     else if IsScreen(Cur, @ScreenScore) or IsScreen(Cur, @ScreenHighScores) then
     begin

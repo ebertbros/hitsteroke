@@ -959,6 +959,220 @@ end;
  * Left: position the bar starts at
  * LyricsMid: the middle of the lyrics relative to the position Left 
  *)
+{ ---------------------------------------------------------------------------
+  HITSTER: scrolling notes on the kiosk (like SingStar)
+
+  The "now" line stands still at HITSTER_NOW_FRAC of the lane and the notes
+  move from right to left through it, at a constant speed in seconds
+  (HITSTER_WINDOW_SEC across the lane), instead of USDX pages (a whole line
+  on screen with a cursor). Notes keep the vertical layout of their own line
+  (its BaseNote), so nothing jumps when a line changes. Sung notes of the
+  previous lines are kept here, because USDX clears them at a line change.
+  --------------------------------------------------------------------------- }
+
+type
+  TKioskSung = record
+    Line: integer;
+    Notes: array of TPlayerNote;
+  end;
+
+var
+  // per player: [0] = current line, [1..] = previous lines
+  KioskSung: array[0..UIni.IMaxPlayerCount - 1, 0..3] of TKioskSung;
+  KioskSungSong: TSong = nil;
+
+procedure KioskRememberSung(PlayerIndex, Track: integer);
+var
+  Cur, I: integer;
+begin
+  if KioskSungSong <> CurrentSong then
+  begin
+    // a new song: forget everything
+    KioskSungSong := CurrentSong;
+    for Cur := 0 to High(KioskSung) do
+      for I := 0 to 3 do
+      begin
+        KioskSung[Cur, I].Line := -1;
+        SetLength(KioskSung[Cur, I].Notes, 0);
+      end;
+  end;
+  Cur := CurrentSong.Tracks[Track].CurrentLine;
+  if KioskSung[PlayerIndex, 0].Line <> Cur then
+  begin
+    for I := 3 downto 1 do
+      KioskSung[PlayerIndex, I] := KioskSung[PlayerIndex, I - 1];
+    KioskSung[PlayerIndex, 0].Line := Cur;
+    KioskSung[PlayerIndex, 0].Notes := nil;
+  end;
+  // notes only grow within a line; a cleared list (line change ahead) must
+  // not wipe what was sung
+  if Player[PlayerIndex].HighNote + 1 >= Length(KioskSung[PlayerIndex, 0].Notes) then
+    KioskSung[PlayerIndex, 0].Notes := Copy(Player[PlayerIndex].Note, 0, Player[PlayerIndex].HighNote + 1);
+end;
+
+{ one note bar (left cap, middle, right cap) from X1 to X2, clipped to the
+  lane: caps outside the lane are left out, the middle is cut at the edge }
+procedure KioskBar(TL, TM, TR: TTexture; X1, X2, Top, H, CapW, Left, Right: real;
+  CR, CG, CB, A: real);
+var
+  MidL, MidR: real;
+
+  procedure Piece(T: TTexture; X, W: real);
+  begin
+    if W <= 0 then
+      Exit;
+    T.X := X;
+    T.Y := Top;
+    T.W := W;
+    T.H := H;
+    T.ColR := CR;
+    T.ColG := CG;
+    T.ColB := CB;
+    T.Alpha := A;
+    T.TexX1 := 0;
+    T.TexX2 := 1;
+    T.TexY1 := 0;
+    T.TexY2 := 1;
+    Renderer.DrawTexture(T);
+  end;
+
+begin
+  if (X2 <= Left) or (X1 >= Right) then
+    Exit;
+  // always some middle: without it the two caps meet and their texture
+  // edges show as a thin vertical seam on very short notes
+  if X2 - X1 < 2 * CapW + 2 then
+    X2 := X1 + 2 * CapW + 2;
+  MidL := X1 + CapW;
+  MidR := X2 - CapW;
+  if X1 >= Left then
+    Piece(TL, X1, CapW)
+  else
+    MidL := Max(MidL, Left);
+  if X2 <= Right then
+    Piece(TR, MidR, CapW)
+  else
+    MidR := Min(MidR, Right);
+  // the middle overlaps the caps a little and is drawn last: no seams
+  if MidL > Left then
+    MidL := Max(Left, MidL - 0.6);
+  if MidR < Right then
+    MidR := Min(Right, MidR + 0.6);
+  Piece(TM, MidL, MidR - MidL);
+end;
+
+procedure KioskDrawTrack(Left, Top, Right: real; Track, PlayerIndex: integer; LineSpacing: integer);
+var
+  NowX, PxPerBeat, Beat, X1, X2, H, Glow, GoldK, Y: real;
+  L, N, S, First, PN: integer;
+  Line: PLine;
+  Golden, Rap: boolean;
+  Last: TRecR;
+  HaveLast: boolean;
+
+  function XOf(B: real): real;
+  begin
+    Result := NowX + (B - Beat) * PxPerBeat;
+  end;
+
+begin
+  if (CurrentSong = nil) or (Track > High(CurrentSong.Tracks)) or (CurrentSong.BPM <= 0) then
+    Exit;
+  PN := PlayerIndex + 1;
+  NowX := Left + (Right - Left) * HITSTER_NOW_FRAC;
+  PxPerBeat := (Right - Left) / (HITSTER_WINDOW_SEC * CurrentSong.BPM / 60);
+  Beat := LyricsState.MidBeat;
+  First := Max(0, CurrentSong.Tracks[Track].CurrentLine - 3);
+
+  // target notes (with the pulsing glow behind them)
+  if ScreenSing.Settings.NotesVisible[Track] then
+  begin
+    Glow := Sqrt(1 + Sin(AudioPlayback.Position * 3)) / 2 + 0.05;
+    for L := First to High(CurrentSong.Tracks[Track].Lines) do
+    begin
+      Line := @CurrentSong.Tracks[Track].Lines[L];
+      if Length(Line^.Notes) = 0 then
+        Continue;
+      if XOf(Line^.Notes[0].StartBeat) > Right then
+        Break;
+      if XOf(Line^.EndBeat) < Left then
+        Continue;
+      for N := 0 to Line^.HighNote do
+        with Line^.Notes[N] do
+        begin
+          if NoteType = ntFreestyle then
+            Continue;
+          Golden := (NoteType = ntGolden) or (NoteType = ntRapGolden);
+          Rap := (NoteType = ntRap) or (NoteType = ntRapGolden);
+          if Golden then GoldK := HITSTER_GOLD_K else GoldK := 1;
+          X1 := XOf(StartBeat);
+          X2 := XOf(StartBeat + Duration);
+          Y := Top - (Tone - Line^.BaseNote) * LineSpacing / 2;
+          // glow
+          H := NotesH[PlayerIndex] * 1.5 + 3.5;
+          if not Rap then
+            KioskBar(Tex_BG_Left[PN], Tex_BG_Mid[PN], Tex_BG_Right[PN], X1 - 4, X2 + 4, Y - H, 2 * H,
+              NotesW[PlayerIndex] * 2 + 2, Left, Right, 1, 1, 1, Glow);
+          // note
+          H := NotesH[PlayerIndex] * GoldK;
+          if Rap then
+            KioskBar(Tex_plain_Left_Rap[PN], Tex_plain_Mid_Rap[PN], Tex_plain_Right_Rap[PN], X1, X2, Y - H, 2 * H,
+              NotesW[PlayerIndex] * GoldK, Left, Right, 1, 1, 1, 1)
+          else
+            KioskBar(Tex_plain_Left[PN], Tex_plain_Mid[PN], Tex_plain_Right[PN], X1, X2, Y - H, 2 * H,
+              NotesW[PlayerIndex] * GoldK, Left, Right, 1, 1, 1, 1);
+        end;
+    end;
+  end;
+
+  // sung notes: the current line live, the previous lines from memory
+  if ScreenSing.Settings.InputVisible then
+  begin
+    KioskRememberSung(PlayerIndex, Track);
+    HaveLast := false;
+    for S := 0 to 3 do
+    begin
+      L := KioskSung[PlayerIndex, S].Line;
+      if (L < 0) or (L > High(CurrentSong.Tracks[Track].Lines)) then
+        Continue;
+      Line := @CurrentSong.Tracks[Track].Lines[L];
+      for N := 0 to High(KioskSung[PlayerIndex, S].Notes) do
+        with KioskSung[PlayerIndex, S].Notes[N] do
+        begin
+          Golden := (NoteType = ntGolden) or (NoteType = ntRapGolden);
+          if Hit and Golden then GoldK := HITSTER_GOLD_K else GoldK := 1;
+          X1 := XOf(Start);
+          X2 := XOf(Start + Duration);
+          // the note being sung grows smoothly up to the now line
+          if (S = 0) and (N = High(KioskSung[PlayerIndex, S].Notes)) then
+            X2 := Min(X2, NowX);
+          if Hit then
+            H := NotesH[PlayerIndex] * GoldK
+          else
+            H := Int(NotesH[PlayerIndex] * 0.65);
+          Y := Top - (Tone - Line^.BaseNote) * LineSpacing / 2;
+          if (NoteType = ntRap) or (NoteType = ntRapGolden) then
+            KioskBar(Tex_Left_Rap[PN], Tex_Mid_Rap[PN], Tex_Right_Rap[PN], X1, X2, Y - H, 2 * H,
+              NotesW[PlayerIndex] * GoldK, Left, Right, 1, 1, 1, 1)
+          else
+            KioskBar(Tex_Left[PN], Tex_Mid[PN], Tex_Right[PN], X1, X2, Y - H, 2 * H,
+              NotesW[PlayerIndex] * GoldK, Left, Right, 1, 1, 1, 1);
+          if S = 0 then
+          begin
+            Last.Top := Y - H;
+            Last.Bottom := Y + H;
+            Last.Right := X2;
+            HaveLast := true;
+          end;
+        end;
+    end;
+    // sparkles where the voice meets a golden note: at the now line, so they
+    // stay with the notes instead of being left behind on a moving lane
+    if HaveLast and (Ini.EffectSing = 1) then
+      GoldenRec.GoldenNoteTwinkle(Last.Top, Last.Bottom, Last.Right, PlayerIndex);
+  end;
+end;
+
 procedure SingDrawLyricHelper(CP: integer; Left, LyricsMid: real);
 var
   Bounds: TRecR;           // bounds of the lyric help bar
@@ -1418,7 +1632,9 @@ begin
   if (ScreenSing.Settings.InputVisible) then
     SingDrawLines;
   // Draw the Notes
-  if (PlayersPlay = 1) then
+  if (PlayersPlay = 1) and RemoteKioskNotes then
+    KioskDrawTrack(NR.Left + 20, TopOneRow1, NR.Right - 20, TrackP1, 0, LineSpacingOneRow)  // HITSTER
+  else if (PlayersPlay = 1) then
   begin
     // SINGLESCREEN
     SingDrawPlayerBGLine(NR.Left + 20, TopOneRow1, NR.Right - 20, TrackP1, 0, LineSpacingOneRow);  // Background glow    - colorized in playercolor
@@ -1426,7 +1642,13 @@ begin
     SingDrawPlayerLine(NR.Left + 20, TopOneRow1, NR.Width - 40, TrackP1, 0, LineSpacingOneRow);       // imho the sung notes
   end;
 
-  if (PlayersPlay = 2) then
+  if (PlayersPlay = 2) and RemoteKioskNotes then
+  begin
+    // HITSTER: scrolling notes
+    KioskDrawTrack(NR.Left + 20, TopTwoRows1, NR.Right - 20, TrackP1, 0, LineSpacingTwoRows);
+    KioskDrawTrack(NR.Left + 20, TopTwoRows2, NR.Right - 20, TrackP2, 1, LineSpacingTwoRows);
+  end
+  else if (PlayersPlay = 2) then
   begin
     // SINGLESCREEN
     SingDrawPlayerBGLine(NR.Left + 20, TopTwoRows1, NR.Right - 20, TrackP1, 0, LineSpacingTwoRows);

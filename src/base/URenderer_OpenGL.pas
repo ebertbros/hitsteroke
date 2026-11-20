@@ -721,6 +721,30 @@ begin
   glUniformMatrix4fv(Location, 1, GL_FALSE, PGLfloat(@Transposed));
 end;
 
+// HITSTER: rotates the 4 vertices of a quad in a mapped vertex buffer
+procedure RotateQuad(Buffer: PGLfloat; CX, CY, Angle, Aspect, FlipX: single);
+var
+  Offsets: array[0..3] of integer;
+  I: integer;
+  DX, DY, C, S: single;
+begin
+  if Aspect <= 0 then
+    Aspect := 1;
+  Offsets[0] := VERTEX_TOPRIGHT_OFFSET;
+  Offsets[1] := VERTEX_BOTTOMRIGHT_OFFSET;
+  Offsets[2] := VERTEX_BOTTOMLEFT_OFFSET;
+  Offsets[3] := VERTEX_TOPLEFT_OFFSET;
+  C := Cos(Angle);
+  S := Sin(Angle);
+  for I := 0 to 3 do
+  begin
+    DX := (Buffer[Offsets[I] + X_OFFSET] - CX) * Aspect;
+    DY := Buffer[Offsets[I] + Y_OFFSET] - CY;
+    Buffer[Offsets[I] + X_OFFSET] := CX + FlipX * (DX * C - DY * S) / Aspect;
+    Buffer[Offsets[I] + Y_OFFSET] := CY + (DX * S + DY * C);
+  end;
+end;
+
 procedure TRenderer_OpenGLBase.DrawTexture(Texture: TTexture; Prog: GLuint; var UpdateTransform: boolean; TransformLocation: GLint);
 var
   Tex: TTexture_OpenGL;
@@ -836,6 +860,11 @@ begin
       Buffer[VERTEX_BOTTOMRIGHT_OFFSET + X_OFFSET] := Buffer[VERTEX_BOTTOMRIGHT_OFFSET + X_OFFSET] + Shear;
       Buffer[VERTEX_BOTTOMLEFT_OFFSET + X_OFFSET] := Buffer[VERTEX_BOTTOMLEFT_OFFSET + X_OFFSET] + Shear;
     end;
+
+    // HITSTER: rotation around the centre (the canvas is stretched, so rotate
+    // in screen proportions: x scaled by AngleAspect before and back after)
+    if (Angle <> 0) or (FlipX <> 1) then
+      RotateQuad(Buffer, X + W / 2, Y + H / 2, Angle, AngleAspect, FlipX);
 
     // Now do the reflection
     if (Reflection) then

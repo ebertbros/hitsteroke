@@ -149,6 +149,11 @@ type
       W: single;
       H: single;
       Shear: single;
+      // HITSTER: rotation around the centre in radians (0 = none); AngleAspect
+      // is the width/height of one canvas unit on screen, so circles stay round
+      Angle: single;
+      AngleAspect: single;
+      FlipX: single;       // HITSTER: horizontal squash after the rotation (card flip), 1 = none
       Int: single; // intensity
       ColR, ColG, ColB: single;
       TexX1: single;
@@ -332,6 +337,9 @@ begin
   ColR := 1;
   ColG := 1;
   ColB := 1;
+  Angle := 0;
+  AngleAspect := 1;
+  FlipX := 1;
   Int := 1;
   AlphaGradient := gdNone;
   Alpha := 1;
@@ -360,6 +368,9 @@ begin
   T.W := W;
   T.H := H;
   T.Int := Int;
+  T.Angle := Angle; // HITSTER
+  T.AngleAspect := AngleAspect;
+  T.FlipX := FlipX;
   T.ColR := ColR;
   T.ColG := ColG;
   T.ColB := ColB;

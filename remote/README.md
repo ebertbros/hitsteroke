@@ -38,6 +38,11 @@ z zajawką piosenki) rysuje `src/base/UHitsterUI.pas`, gdy `Design=1`.
 Grafiki, motyw i czcionki instaluje `hitster/install.py`, patrz
 [`hitster/README.md`](../hitster/README.md).
 
+`Logos=1` pokazuje w prawym górnym rogu ekranu oczekiwania i ekranu wyników
+logo Hitster i TM Toys (np. na prezentację dla klienta; domyślnie `0`, na
+ekranie śpiewu nigdy). Grafikę `logos.png` tworzy `hitster/install.py`; bez
+niej nic się nie rysuje. W trakcie działania gry przełącza to komenda `LOGOS`.
+
 ## Protokół
 
 - Transport: UDP, adres `127.0.0.1`, port `Port` (domyślnie 47700).
@@ -131,6 +136,25 @@ ekran oczekiwania.
 Kończy piosenkę od razu, ale tak, jakby skończyła się sama: z ekranem wyników
 (STOP je pomija). Poza ekranem śpiewu zwraca `"error":"NOT_SINGING"`.
 
+### UNAVAILABLE &lt;wykonawca&gt;|&lt;tytuł&gt;|&lt;rok&gt;
+
+Karta znana (z bazy kart), ale jej piosenki nie ma dziś w bibliotece. Przy
+`Design=1` gra pokazuje odwracającą się kartę z danymi i komunikat „Not on
+today's playlist / Sorry, we can't play this song today. Try another card!”
+przez ok. 6 s. W trakcie piosenki zwraca `"error":"SINGING"` i nic nie
+pokazuje. Wysyła ją skrypt skanera (`hitster/cards/skaner.py`).
+
+```
+UNAVAILABLE Harry Styles|Late Night Talking|2022
+```
+
+### Odkrycie karty przed piosenką
+
+Przy `Design=1` i `[Remote] Reveal=1` (domyślnie) PLAY nie startuje piosenki od
+razu: na ekranie karta obraca się ze strony z kodem QR na stronę z rokiem,
+potem odliczanie 3-2-1 i podpowiedź „P1 Left mic / Right mic P2”. Start
+piosenki ok. 3,5 s po skanie. `Reveal=0` wyłącza animację.
+
 ### MENU [main|options|record]
 
 Otwiera menu dla operatora: główne, opcje albo ustawienia mikrofonów
@@ -145,6 +169,17 @@ katalogu `screenshots` gry. Bez okienka „zapisano zrzut”.
 
 ```json
 {"ok":true,"cmd":"SHOT","file":"/Users/.../screenshots/hitster-20261119-101500.jpg"}
+```
+
+### LOGOS on|off
+
+Pokazuje albo chowa logo Hitster i TM Toys na ekranie oczekiwania i ekranie
+wyników, od razu i tylko do końca działania gry (nie zapisuje `config.ini`;
+wartość przy starcie to `[Remote] Logos`). Inny argument zwraca
+`"error":"BAD_ARG"`.
+
+```json
+{"ok":true,"cmd":"LOGOS","logos":true}
 ```
 
 `PING` działa jak `STATUS`. Nieznana komenda zwraca `{"ok":false,...,"error":"BAD_COMMAND"}`.

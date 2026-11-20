@@ -12,6 +12,10 @@ Trzy ekrany stanowiska rysuje `src/base/UHitsterUI.pas` (wywoływany z
   `TeaserVolume`), wyniki liczone od zera, zwycięzca, „Scan your next card”
   i odliczanie do powrotu (`ScoreSeconds`).
 
+Na prezentację dla klienta `[Remote] Logos=1` dodaje w prawym górnym rogu
+ekranu oczekiwania i ekranu wyników logo Hitster i TM Toys (`logos.png` z
+`install.py`); na event wystarczy `Logos=0` albo komenda pilota `LOGOS off`.
+
 Menu (tylko dla operatora, `MENU` z pilota) ma tło i kolory Hitstera, bez
 logo i nazwy UltraStar Deluxe. Tytuł okna i okna błędów: „Hitster Karaoke”.
 Ekran „About and credits” zostaje: wymienia autorów USDX (licencja GPL).
