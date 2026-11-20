@@ -1,0 +1,7 @@
+# cache: baza Jumbo, Spotify, MusicBrainz, pliki .txt z USDB, sesja USDB, raporty pobierania
+.cache/
+__pycache__/
+*.pyc
+# wyniki (dane kart z bazy Jumbo i mapa skanera) - lokalnie, nie do publicznego repo
+editions/
+scanner_map.json

@@ -5,6 +5,7 @@ Użycie:
     python3 hitster/cards/fetch_jumbo_db.py            # pobierz i nadpisz gameset_database.json
     python3 hitster/cards/fetch_jumbo_db.py --check    # tylko porównaj, nic nie zapisuj
     python3 hitster/cards/fetch_jumbo_db.py --sku aaae0001 aaae0007   # zmiany tylko w tych edycjach
+    python3 hitster/cards/fetch_jumbo_db.py --list [aaae]   # edycje z lokalnej kopii (bez sieci)
 
 Na evencie używamy kopii z repo, nie pobieramy bazy na żywo.
 """
@@ -41,7 +42,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true", help="tylko porównaj z lokalną kopią")
     ap.add_argument("--sku", nargs="*", help="pokaż zmiany tylko dla tych edycji")
+    ap.add_argument("--list", nargs="?", const="", metavar="PREFIKS",
+                    help="wypisz edycje z lokalnej kopii (opcjonalnie tylko SKU o prefiksie)")
     args = ap.parse_args()
+
+    if args.list is not None:
+        db = json.loads(LOCAL.read_text(encoding="utf-8"))
+        print(f"Lokalna kopia: {len(db['gamesets'])} edycji, baza z {stamp(db)}")
+        for s, d in sorted(index(db).items()):
+            if s.startswith(args.list):
+                print(f"{s}  {len(d['cards']):4d}  {d['lang']:<12} {d['name']}")
+        return 0
 
     req = urllib.request.Request(URL, headers={"User-Agent": "hitsteroke/1.0"})
     raw = urllib.request.urlopen(req, timeout=60).read()
