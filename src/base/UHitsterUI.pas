@@ -44,6 +44,8 @@ procedure HitsterDrawSing(Elapsed: real);
 procedure HitsterLineRating(PlayerIndex, Rating: integer);
 { a scanned card has no song: "Try another card" for a few seconds }
 procedure HitsterShowNotice;
+{ operator warning shown at the top of the waiting screen ('' = none) }
+procedure HitsterSetWarning(const Text: UTF8String);
 { score screen; Remaining < 0 hides the countdown }
 procedure HitsterDrawScore(Elapsed, Remaining, Total: real);
 procedure HitsterUIFree;
@@ -104,6 +106,8 @@ var
 
   // "Try another card" notice
   NoticeTicks: cardinal = 0;
+  // operator warning (e.g. song drive not connected)
+  Warning: UTF8String = '';
 
   // last line rating per player (P1, P2)
   RatingValue: array[0..1] of integer;
@@ -362,6 +366,11 @@ begin
   DrawTex(T, X + W * Share, Y, W * (1 - Share), H, CR, 1, Share, 1);
 end;
 
+procedure HitsterSetWarning(const Text: UTF8String);
+begin
+  Warning := Text;
+end;
+
 procedure HitsterShowNotice;
 begin
   NoticeTicks := Max(SDL_GetTicks(), 1);
@@ -433,6 +442,13 @@ begin
   DrawTex(TexWaiting, 0, 0, 1920, 1080, C_WHITE, 1);
 
   DrawCallToAction(Title, Sub, 800, 104, 948, 34);
+
+  // for the operator: something is missing (small, top left, out of the way)
+  if Warning <> '' then
+  begin
+    Rect(40, 40, 14, 14, C_YELLOW, 0.6 + 0.4 * Sin(Elapsed * 4));
+    Txt(Warning, 68, 32, 28, 0, FAM_BROWN, ftBold, C_YELLOW, 1, 1800);
+  end;
 
   // the arrow points down at the scanner
   Bob := Sin(Elapsed * 3.2) * 7;

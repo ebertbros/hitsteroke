@@ -16,6 +16,10 @@ Menu (tylko dla operatora, `MENU` z pilota) ma tło i kolory Hitstera, bez
 logo i nazwy UltraStar Deluxe. Tytuł okna i okna błędów: „Hitster Karaoke”.
 Ekran „About and credits” zostaje: wymienia autorów USDX (licencja GPL).
 
+Ekrany są zaprojektowane w proporcjach 16:9. Na ekranie o innych proporcjach
+(MacBook 16:10, monitor ultrawide) gra dodaje czarne pasy zamiast rozciągać
+obraz (`[Remote] Aspect=16:9`, `0` = rozciąganie jak w USDX).
+
 Kolory graczy w grze: P1 `#E6007E`, P2 `#00AAD5` (pozycje 6 i 12 palety w
 `UThemes.GetPlayerColor`, w `config.ini` `[PlayerColor] P1=6, P2=12`).
 Mikrofony na stoisku mają te same kolory.
@@ -41,6 +45,27 @@ Skrypt tworzy w `~/Library/Application Support/UltraStar Deluxe/`:
 | motyw `Hitster` (kopia Modern: ukryte ramki wyników i pasek czasu, przyciemnienie pod nutami, własne nuty) | `themes/Hitster.ini`, `themes/Hitster/` |
 | grafiki ekranów | `hitster/*.png` |
 | ustawienia (motyw, czcionka, kolory, `ScreenFade=Off`, `SingScores=Off`, `[Remote] Design=1`) | `config.ini` (kopia: `config.ini.bak-hitster`) |
+
+### Dane na dysku zewnętrznym
+
+Czcionki, motyw i `config.ini` (ok. 65 MB) zostają w katalogu użytkownika, bo
+bez nich gra nie wystartuje. Grafiki i bibliotekę piosenek można trzymać gdzie
+indziej:
+
+```bash
+python3 hitster/install.py --brand ../assets/brand --data "/Volumes/DYSK/Hitster Karaoke"
+```
+
+- grafiki: `DATA/art` (`[Remote] ArtDir`),
+- piosenki: `DATA/songs` (`[Directories] SongDir1`); `PLAY hitster/<folder>`
+  szuka w `DATA/songs/hitster/<folder>`,
+- `--songs DIR` ustawia samą bibliotekę gdzie indziej,
+- uruchomienie bez `--data` przenosi grafiki z powrotem do katalogu użytkownika.
+
+Jeśli przy starcie gry dysku nie ma, ekran oczekiwania pokazuje u góry żółty
+napis „Drive not connected: … connect it and restart the game”, a gra działa
+dalej bez tych piosenek (skan pokaże „Try another card”). Piosenki są
+wczytywane przy starcie, więc po podłączeniu dysku trzeba zrestartować grę.
 
 `--no-config` odświeża same grafiki i motyw bez ruszania `config.ini`.
 Brak grafik nie psuje gry: ekrany rysują się wtedy samymi kolorami.

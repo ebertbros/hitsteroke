@@ -317,6 +317,9 @@ procedure TRemoteControl.LoadConfig;
 var
   IniFile: TMemIniFile;
   I: integer;
+  Keys: TStringList;
+  Dir, Missing, AspectStr: UTF8String;
+  AW, AH: integer;
 begin
   FEnabled := false;
   FSkipScore := false;
@@ -344,6 +347,26 @@ begin
     FDesign      := IniFile.ReadInteger(REMOTE_SECTION, 'Design', 1) = 1;
     FTeaserVolume := IniFile.ReadInteger(REMOTE_SECTION, 'TeaserVolume', DEFAULT_TEASER_VOLUME);
     FArtDir      := IniFile.ReadString(REMOTE_SECTION, 'ArtDir', '');
+    AspectStr    := Trim(IniFile.ReadString(REMOTE_SECTION, 'Aspect', '16:9'));
+
+    // song folders on an external drive: if the drive is not connected the
+    // game starts without those songs, so say it on the waiting screen
+    Missing := '';
+    Keys := TStringList.Create;
+    try
+      IniFile.ReadSection('Directories', Keys);
+      for I := 0 to Keys.Count - 1 do
+        if Pos('SONGDIR', UpperCase(Keys[I])) = 1 then
+        begin
+          Dir := Trim(IniFile.ReadString('Directories', Keys[I], ''));
+          if (Dir <> '') and not Path(Dir).IsDirectory then
+            Missing := Dir;
+        end;
+    finally
+      Keys.Free;
+    end;
+    if (Missing = '') and (Trim(FArtDir) <> '') and not Path(Trim(FArtDir)).IsDirectory then
+      Missing := Trim(FArtDir);
   finally
     IniFile.Free;
   end;
@@ -357,6 +380,23 @@ begin
     FScoreSeconds := 0;
   if FTeaserVolume < 0 then FTeaserVolume := 0;
   if FTeaserVolume > 100 then FTeaserVolume := 100;
+
+  // the stand screens are designed for 16:9; other screens (a 16:10 laptop)
+  // get black bars instead of stretched circles and cards. 0 = stretch.
+  HitsterAspect := 0;
+  I := Pos(':', AspectStr);
+  if (I > 0) and TryStrToInt(Copy(AspectStr, 1, I - 1), AW) and
+     TryStrToInt(Copy(AspectStr, I + 1, Length(AspectStr)), AH) and (AW > 0) and (AH > 0) then
+    HitsterAspect := AW / AH;
+  Log.LogStatus('aspect: ' + AspectStr, LOG_SOURCE);
+
+  if Missing <> '' then
+  begin
+    Log.LogError('folder not found (drive not connected?): ' + Missing, LOG_SOURCE);
+    HitsterSetWarning('Drive not connected: ' + Missing + '  -  connect it and restart the game');
+  end
+  else
+    HitsterSetWarning('');
 
   if FDesign then
   begin

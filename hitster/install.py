@@ -8,6 +8,15 @@ Buduje lokalnie (nic z tego nie trafia do repozytorium):
   <userdir>/hitster/     grafiki ekranów: oczekiwanie, karty, pasek pojedynku
   <userdir>/config.ini   klucze motywu, czcionki, kolorów i trybu eventowego
 
+Czcionki, motyw i config.ini (ok. 65 MB) zostają w katalogu użytkownika: bez
+nich gra nie wystartuje. Dane, które zajmują miejsce, można trzymać gdzie
+indziej, np. na dysku zewnętrznym:
+
+  --data DIR    grafiki w DIR/art, biblioteka piosenek w DIR/songs
+  --songs DIR   inna lokalizacja samej biblioteki piosenek
+
+  python3 hitster/install.py --brand ../assets/brand --data "/Volumes/DYSK/Hitster Karaoke"
+
 Materiały marki (BrownStd, okręgi Hitstera) są poufne i nie mogą być w publicznym
 forku, dlatego skrypt czyta je z osobnego katalogu (--brand).
 
@@ -454,18 +463,18 @@ CONFIG = {
     "Graphics": {"VideoPreview": "Off", "MovieSize": "Full [BG+Vid]", "Oscilloscope": "Off"},
     "Sound": {"PreviewVolume": "0", "BackgroundMusic": "Off"},
     "Game": {"Language": "English", "Tabs": "Off"},
-    "Remote": {"Design": "1", "TeaserVolume": "70",
+    "Remote": {"Design": "1", "TeaserVolume": "70", "Aspect": "16:9",
                "WaitingText": "Scan your card", "WaitingSubText": "and sing the duel"},
 }
 
 
-def patch_config(userdir):
+def patch_config(userdir, locations):
     path = userdir / "config.ini"
     if not path.is_file():
-        print("  config.ini nie istnieje, uruchom grę raz i powtórz z --config")
+        print("  config.ini nie istnieje, uruchom grę raz i powtórz bez --no-config")
         return
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    for section, keys in CONFIG.items():
+    for section, keys in list(CONFIG.items()) + list(locations.items()):
         for k, v in keys.items():
             ini_set(lines, section, k, v)
     shutil.copy2(path, path.with_suffix(".ini.bak-hitster"))
@@ -481,11 +490,31 @@ def main():
                     help="katalog materiałów marki (zawiera drive/BrownStd-*.otf i drive/Vinyl circles.ai)")
     ap.add_argument("--userdir", type=pathlib.Path, default=DEFAULT_USERDIR)
     ap.add_argument("--game", type=pathlib.Path, default=REPO / "game", help="katalog danych gry (themes, fonts)")
+    ap.add_argument("--data", type=pathlib.Path,
+                    help="katalog na dane (np. dysk zewnętrzny): grafiki w DATA/art, piosenki w DATA/songs")
+    ap.add_argument("--songs", type=pathlib.Path, help="katalog biblioteki piosenek (nadpisuje DATA/songs)")
     ap.add_argument("--no-config", action="store_true", help="nie zmieniaj config.ini")
     args = ap.parse_args()
 
     brand = args.brand.expanduser().resolve()
     userdir = args.userdir.expanduser()
+
+    data = args.data.expanduser().resolve() if args.data else None
+    songs = args.songs.expanduser().resolve() if args.songs else (data / "songs" if data else None)
+    art_dir = data / "art" if data else userdir / "hitster"
+    for d in (data, songs):
+        if d is None:
+            continue
+        parts = d.parts
+        # /Volumes/<name>/...: the drive has to be connected
+        if len(parts) > 2 and parts[1] == "Volumes" and not pathlib.Path("/Volumes", parts[2]).is_dir():
+            die("dysk /Volumes/%s nie jest podłączony" % parts[2])
+    if songs is not None:
+        songs.mkdir(parents=True, exist_ok=True)
+    # ArtDir is written explicitly, so running without --data moves art back home
+    locations = {"Remote": {"ArtDir": str(art_dir) if data else ""}}
+    if songs is not None:
+        locations["Directories"] = {"SongDir1": str(songs)}
     if not args.no_config and game_running():
         die("gra jest uruchomiona; zamknij ją (nadpisałaby config.ini)")
     chrome = next((c for c in CHROMES if os.path.exists(c)), None)
@@ -512,10 +541,15 @@ def main():
         print("motyw")
         build_theme(args.game, userdir, r)
         print("grafiki")
-        render_art(r, userdir / "hitster", data_uri(tmp / "vinyl.png", "image/png"))
+        render_art(r, art_dir, data_uri(tmp / "vinyl.png", "image/png"))
+        print("  grafiki: " + str(art_dir))
+        if songs is not None:
+            print("  piosenki: " + str(songs) + "  (PLAY hitster/<folder> = " + str(songs / "hitster") + "/<folder>)")
         if not args.no_config:
             print("config.ini")
-            patch_config(userdir)
+            patch_config(userdir, locations)
+        elif data or songs:
+            print("  --no-config: wpisz ręcznie do config.ini: " + repr(locations))
     print("gotowe")
 
 

@@ -151,6 +151,9 @@ type
 
 var
   Display: TDisplay;
+  // HITSTER: aspect ratio the screens are drawn in (16/9 for the stand), the
+  // rest of the window stays black; 0 = stretch to the window like upstream
+  HitsterAspect: real = 0;
   SupportsNPOT: Boolean;
   LastFPS:       cardinal;
 
@@ -314,14 +317,36 @@ var
   FadeStateSquare: real;
   FadeW, FadeH:    real;
   FadeCopyW, FadeCopyH: integer;
+  VW, VH:          integer;
 
 begin
   Result := true;
 
+  // HITSTER: black bars outside the kept aspect ratio (cleared every frame,
+  // the screens only paint their own area)
+  if HitsterAspect > 0 then
+  begin
+    Renderer.SetViewPort(0, 0, ScreenW, ScreenH);
+    Renderer.SetClearColor(0, 0, 0, 1);
+    Renderer.ClearFrameBuffer(CLEAR_COLOR);
+  end;
+
   for S := 1 to Screens do
   begin
     ScreenAct := S;
-    Renderer.SetViewPort((S-1) * ScreenWPerScreen, 0, ScreenWPerScreen, ScreenH);
+    if HitsterAspect > 0 then
+    begin
+      VW := ScreenWPerScreen;
+      VH := ScreenH;
+      if VW / VH > HitsterAspect then
+        VW := Round(VH * HitsterAspect)   // wider than 16:9: bars left and right
+      else
+        VH := Round(VW / HitsterAspect);  // taller (16:10, 4:3): bars top and bottom
+      Renderer.SetViewPort((S-1) * ScreenWPerScreen + (ScreenWPerScreen - VW) div 2,
+        (ScreenH - VH) div 2, VW, VH);
+    end
+    else
+      Renderer.SetViewPort((S-1) * ScreenWPerScreen, 0, ScreenWPerScreen, ScreenH);
 
     // popup check was successful... move on
     if CheckOK then
