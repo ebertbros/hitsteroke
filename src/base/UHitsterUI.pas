@@ -549,6 +549,50 @@ begin
   end;
 end;
 
+{ x of the current beat on a note lane (pixels), or -1 outside the sung line.
+  USDX lays a line's notes out linearly from x 40 to 760 (800x600 canvas):
+  from the first note's start to the line's end beat (see UDraw.SingDrawLine). }
+function NowX(Track: integer; out A: real): real;
+var
+  Beat, Len: real;
+  Cur: integer;
+  Line: PLine;
+begin
+  Result := -1;
+  A := 0;
+  if (CurrentSong = nil) or (LyricsState = nil) or (Track > High(CurrentSong.Tracks)) then
+    Exit;
+  Cur := CurrentSong.Tracks[Track].CurrentLine;
+  if (Cur < 0) or (Cur >= Length(CurrentSong.Tracks[Track].Lines)) then
+    Exit;
+  Line := @CurrentSong.Tracks[Track].Lines[Cur];
+  if Length(Line^.Notes) = 0 then
+    Exit;
+  Len := Line^.EndBeat - Line^.Notes[0].StartBeat;
+  Beat := LyricsState.MidBeat - Line^.Notes[0].StartBeat;
+  if (Len <= 0) or (Beat > Len) then
+    Exit;
+  // the game shows the next line before it starts: wait at its first note,
+  // dimmed, as a "get ready" mark
+  if Beat < 0 then
+  begin
+    Beat := 0;
+    A := 0.35;
+  end
+  else
+    A := 1;
+  Result := (40 + 720 * Beat / Len) * 1920 / 800;
+end;
+
+{ the "now" line moving across the notes, like the playhead on the timeline }
+procedure DrawNowLine(X, A, Y1, Y2: real);
+begin
+  if X < 0 then
+    Exit;
+  Rect(X - 5, Y1, 10, Y2 - Y1, C_WHITE, 0.12 * A);
+  Rect(X - 1.5, Y1, 3, Y2 - Y1, C_WHITE, 0.9 * A);
+end;
+
 { song timeline: where the lines are sung, what is behind us, where we are }
 procedure DrawTimeline(X, Y, W, H: real);
 var
@@ -610,7 +654,7 @@ var
   Target, SeamX, LabelW, X, Y, InnerX: real;
   Year, Artist, Title: UTF8String;
   Ci: integer;
-  MicDt: real;
+  MicDt, X1, X2, A1, A2: real;
 begin
   EnsureLoaded;
   BeginOverlay;
@@ -676,6 +720,20 @@ begin
   end;
   Txt(Artist, InnerX, Y + 19, 26, 0, FAM_BROWN, ftBold, C_INK, 1, X + CARD_W - 26 - InnerX);
   Txt(Title, InnerX, Y + 50, 24, 0, FAM_BROWN, ftRegular, C_INK, 1, X + CARD_W - 26 - InnerX);
+
+  // "now" line over the notes: one line through both lanes when both sing
+  // the same track, a short one per lane in duets
+  X1 := NowX(0, A1);
+  if (PlayersPlay >= 2) and CurrentSong.isDuet then
+  begin
+    DrawNowLine(X1, A1, LANE1_Y - 150, LANE1_Y + 22);
+    X2 := NowX(1, A2);
+    DrawNowLine(X2, A2, LANE2_Y - 150, LANE2_Y + 22);
+  end
+  else if PlayersPlay >= 2 then
+    DrawNowLine(X1, A1, LANE1_Y - 150, LANE2_Y + 22)
+  else
+    DrawNowLine(X1, A1, LANE1_Y - 150, LANE1_Y + 22);
 
   // lane tags: P1 above the upper lane on the left, P2 below the lower lane on the right
   DrawTex(TexTag1, 30, LANE1_Y - 96, 64, 40, C_WHITE, 1);
