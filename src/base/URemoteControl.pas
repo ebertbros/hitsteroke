@@ -612,6 +612,9 @@ begin
   begin
     FLastError := Err + ': ' + Arg;
     Log.LogError('PLAY ' + Err + ': "' + Arg + '"', LOG_SOURCE);
+    // tell the guest, unless a duel is running (a stray scan must not disturb it)
+    if FDesign and not IsScreen(Display.CurrentScreen, @ScreenSing) then
+      HitsterShowNotice;
     Result := '{"ok":false,"cmd":"PLAY","error":' + JsonStr(Err) +
               ',"song":' + JsonStr(Arg) + '}';
     Exit;
@@ -905,6 +908,8 @@ begin
       begin
         FLastError := 'LOAD_FAILED: ' + FCurrentPath;
         Log.LogError('song could not be loaded: "' + FCurrentPath + '"', LOG_SOURCE);
+        if FDesign then
+          HitsterShowNotice;
         ScreenPopupError.Visible := false;
       end;
       FCurrentPath := '';

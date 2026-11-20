@@ -81,7 +81,10 @@ około 0,5–1 s; potwierdzisz go przez `STATUS` (`state: "playing"`, rosnące `
 
 Błędy PLAY:
 
-- `NOT_FOUND`: nie ma takiego folderu. Gra nic nie robi, wpis trafia do `Error.log`.
+- `NOT_FOUND`: nie ma takiego folderu. Piosenka się nie zmienia, wpis trafia do
+  `Error.log`. Przy `Design=1` ekran oczekiwania (i ekran wyników) pokazuje na
+  4 s „Try another card / This song isn't on today's list”; w trakcie
+  pojedynku nic się nie wyświetla, żeby przypadkowy skan nie przeszkadzał.
 - `AMBIGUOUS`: luźne dopasowanie trafiło w kilka folderów.
 - `EMPTY_PATH`: brak argumentu.
 - `BUSY`: lista piosenek jeszcze się ładuje (kilka sekund po starcie gry).

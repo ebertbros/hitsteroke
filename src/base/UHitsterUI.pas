@@ -42,6 +42,8 @@ procedure HitsterDrawWaiting(const Title, Sub: UTF8String; Elapsed: real);
 procedure HitsterDrawSing(Elapsed: real);
 { shows a line rating (0..8) next to the player's lane }
 procedure HitsterLineRating(PlayerIndex, Rating: integer);
+{ a scanned card has no song: "Try another card" for a few seconds }
+procedure HitsterShowNotice;
 { score screen; Remaining < 0 hides the countdown }
 procedure HitsterDrawScore(Elapsed, Remaining, Total: real);
 procedure HitsterUIFree;
@@ -99,6 +101,9 @@ var
   // smoothed microphone level per player (0..1)
   MicShown: array[0..1] of real = (0, 0);
   MicTicks: cardinal = 0;
+
+  // "Try another card" notice
+  NoticeTicks: cardinal = 0;
 
   // last line rating per player (P1, P2)
   RatingValue: array[0..1] of integer;
@@ -357,6 +362,51 @@ begin
   DrawTex(T, X + W * Share, Y, W * (1 - Share), H, CR, 1, Share, 1);
 end;
 
+procedure HitsterShowNotice;
+begin
+  NoticeTicks := Max(SDL_GetTicks(), 1);
+end;
+
+{ notice visibility 0..1 (fade in, hold, fade out after 4 s) and a short
+  head-shake offset in pixels at its start }
+function NoticeAlpha(out Shake: real): real;
+const
+  SHOW = 4.0;
+var
+  Age: real;
+begin
+  Result := 0;
+  Shake := 0;
+  if NoticeTicks = 0 then
+    Exit;
+  Age := (SDL_GetTicks() - NoticeTicks) / 1000;
+  if (Age < 0) or (Age > SHOW) then
+  begin
+    NoticeTicks := 0;
+    Exit;
+  end;
+  Result := Min(1, Age / 0.15) * EnsureRange((SHOW - Age) / 0.4, 0, 1);
+  Shake := 16 * Sin(Age * 38) * Exp(-Age * 7);
+end;
+
+{ the screen's call to action, or the notice in its place }
+procedure DrawCallToAction(const Title, Sub: UTF8String; TitleY, TitleSize, SubY, SubSize: real);
+var
+  NA, Shake: real;
+begin
+  NA := NoticeAlpha(Shake);
+  if NA < 1 then
+  begin
+    Txt(Title, 960, TitleY, TitleSize, 1, FAM_BROWN, ftBoldHighRes, C_WHITE, 1 - NA, 1700);
+    Txt(Sub, 960, SubY, SubSize, 1, FAM_LIGHT, ftRegular, C_MUTED, 1 - NA, 1600);
+  end;
+  if NA > 0 then
+  begin
+    Txt('Try another card', 960 + Shake, TitleY, TitleSize, 1, FAM_BROWN, ftBoldHighRes, C_YELLOW, NA, 1700);
+    Txt('This song isn''t on today''s list', 960, SubY, SubSize, 1, FAM_LIGHT, ftRegular, C_WHITE, NA, 1600);
+  end;
+end;
+
 procedure BeginOverlay;
 begin
   Renderer.DepthTest := false;
@@ -382,8 +432,7 @@ begin
   Rect(0, 0, 1920, 1080, C_BG, 1);
   DrawTex(TexWaiting, 0, 0, 1920, 1080, C_WHITE, 1);
 
-  Txt(Title, 960, 800, 104, 1, FAM_BROWN, ftBoldHighRes, C_WHITE, 1, 1700);
-  Txt(Sub, 960, 948, 34, 1, FAM_LIGHT, ftRegular, C_MUTED, 1, 1600);
+  DrawCallToAction(Title, Sub, 800, 104, 948, 34);
 
   // the arrow points down at the scanner
   Bob := Sin(Elapsed * 3.2) * 7;
@@ -778,7 +827,9 @@ begin
   end;
 
   // next action
-  Txt('Scan your next card', 960, 812, 76, 1, FAM_BROWN, ftBoldHighRes, C_WHITE, 1, 1700);
+  // the notice line sits where the countdown label is, so it is only shown
+  // instead of the title here (the countdown keeps running below)
+  DrawCallToAction('Scan your next card', '', 812, 76, 894, 28);
   if (Remaining >= 0) and (Total > 0) then
   begin
     Rect(960 - 267, 944, 534, 7, C_WHITE, 0.14);
